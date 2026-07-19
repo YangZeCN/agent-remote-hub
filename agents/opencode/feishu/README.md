@@ -1,4 +1,4 @@
-# OpenCode 远程控制方案
+# OpenCode + 飞书通道
 
 通过飞书（Feishu）远程操控 OpenCode AI 助手，实现手机端随时随地的代码协作。
 

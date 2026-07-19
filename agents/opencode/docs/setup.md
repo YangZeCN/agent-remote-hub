@@ -2,15 +2,13 @@
 
 本文档介绍如何在新电脑上从零搭建 OpenCode 远程控制环境。
 
-## 前置条件
+环境配置分为两部分：
+1. **通用依赖**：所有通道共享的基础环境
+2. **通道专属配置**：根据你选择的通道，安装对应的桥接工具和凭证
 
-- Node.js + npm
-- Bun（opencode-lark 依赖）
-- opencode（AI 引擎）
-- opencode-lark（飞书桥接）
-- 飞书应用凭证（App ID + App Secret）
+## 第一部分：通用依赖
 
-## 安装步骤
+以下依赖与通道无关，所有方案都需要安装。
 
 ### 1. 安装 Node.js
 
@@ -21,7 +19,33 @@ node -v
 npm -v
 ```
 
-### 2. 安装 Bun
+### 2. 安装 opencode
+
+```powershell
+npm install -g opencode-ai
+opencode --version
+```
+
+> 脚本实际调用的是 `opencode.exe`，路径为 `%APPDATA%\npm\node_modules\opencode-ai\bin\opencode.exe`。
+
+### 验证通用依赖
+
+```powershell
+node -v
+opencode --version
+```
+
+全部有输出后，通用环境已就绪。接下来根据你要使用的通道，完成对应的专属配置。
+
+---
+
+## 第二部分：通道专属配置
+
+根据你要使用的通道，选择对应的配置步骤。
+
+### 飞书（Feishu）
+
+#### 安装 Bun
 
 Bun 是 opencode-lark 的运行环境。在 PowerShell 中执行：
 
@@ -37,16 +61,7 @@ bun --version
 
 > 如果 `bun` 命令找不到，把 `C:\Users\<你的用户名>\.bun\bin` 加到系统 PATH。
 
-### 3. 安装 opencode
-
-```powershell
-npm install -g opencode-ai
-opencode --version
-```
-
-> 脚本实际调用的是 `opencode.exe`，路径为 `%APPDATA%\npm\node_modules\opencode-ai\bin\opencode.exe`。
-
-### 4. 安装 opencode-lark
+#### 安装 opencode-lark
 
 ```powershell
 bun add -g opencode-lark
@@ -60,7 +75,7 @@ opencode-lark --version
 
 > 实际二进制在 `~/.bun/bin/opencode-lark.exe`。
 
-### 5. 配置飞书应用凭证
+#### 配置飞书应用凭证
 
 opencode-lark 需要飞书应用的 App ID 和 App Secret 才能连接飞书。
 
@@ -88,18 +103,22 @@ $env:LARK_APP_ID = "你的 App ID"
 $env:LARK_APP_SECRET = "你的 App Secret"
 ```
 
-### 6. 验证环境
+> 更详细的飞书应用创建指南请参考 [飞书配置指南](../../../docs/feishu-setup.md)。
+
+#### 验证飞书通道环境
 
 ```powershell
-# 检查所有依赖
-node -v
-bun --version
-opencode --version
 opencode-lark --version
 ```
 
-全部有输出后，就可以运行一键启动脚本了。
+### Telegram
+
+> 🔜 待补充
+
+---
 
 ## 下一步
 
-环境配置完成后，参考 [飞书通道文档](../feishu/README.md) 启动远程控制。
+环境配置完成后，参考对应通道的文档启动远程控制：
+
+- [飞书通道文档](../feishu/README.md)

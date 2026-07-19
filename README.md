@@ -2,31 +2,76 @@
 
 远程控制 AI 编程助手的统一方案集合，支持多种 AI Agent 和多种通信通道。
 
-## 支持的 Agent
+## 架构概览
 
-- **OpenCode** - 终端 AI 编程助手，支持远程控制和会话持久化
-- **VSCode** - （规划中）VSCode 扩展远程控制方案
+```
+┌─────────────────────────────────────────────────┐
+│              用户层（User Layer）                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ 飞书客户端│  │ Telegram │  │  其他通道 │      │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘      │
+└───────┼──────────────┼──────────────┼───────────┘
+        │              │              │
+        ▼              ▼              ▼
+┌─────────────────────────────────────────────────┐
+│            通道层（Channel Layer）                │
+│  ┌──────────────────────────────────────────┐  │
+│  │  桥接服务（Bridge Service）               │  │
+│  │  - opencode-lark（飞书）                 │  │
+│  │  - opencode-telegram（Telegram）         │  │
+│  │  - 其他通道桥接                          │  │
+│  └──────────────┬───────────────────────────┘  │
+└─────────────────┼───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│            Agent 层（Agent Layer）                │
+│  ┌──────────────────────────────────────────┐  │
+│  │  AI 引擎服务（AI Engine Service）         │  │
+│  │  - opencode serve（OpenCode）            │  │
+│  │  - VSCode Extension Host（VSCode）       │  │
+│  │  - 其他 Agent 服务                       │  │
+│  └──────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────┘
+```
 
-## 支持的通道
+核心设计：Agent 和通道解耦，通过桥接服务连接。详见 [整体架构设计](docs/architecture.md)。
 
-- **飞书（Feishu）** - 企业级即时通讯，支持消息推送和会话管理
-- **Telegram** - （规划中）个人即时通讯通道
+## 方案矩阵
+
+| | 飞书（Feishu） | Telegram |
+|---|---|---|
+| **OpenCode** | ✅ [可用](agents/opencode/feishu/) | 🔜 规划中 |
+| **VSCode** | 🔜 规划中 | 🔜 规划中 |
 
 ## 快速开始
 
-根据你的需求选择对应的方案：
+### 1. 选择方案
 
-### OpenCode + 飞书
+根据上方矩阵选择你要使用的 Agent + 通道组合，进入对应目录查看详细说明。
 
-```bash
+当前可用方案：
+
+| 方案 | 入口 | 说明 |
+|---|---|---|
+| OpenCode + 飞书 | [agents/opencode/feishu/](agents/opencode/feishu/) | 通过飞书远程操控 OpenCode |
+
+### 2. 环境配置
+
+所有方案共享一套基础环境，通道相关的依赖在各自文档中说明。
+
+→ [环境配置指南](agents/opencode/docs/setup.md)
+
+### 3. 启动
+
+以 OpenCode + 飞书为例：
+
+```powershell
 cd agents/opencode/feishu
-./start-opencode-remote.ps1
+.\start-opencode-remote.ps1
 ```
 
-详细配置请参考：
-- [OpenCode 方案说明](agents/opencode/README.md)
-- [飞书通道配置](agents/opencode/feishu/README.md)
-- [环境配置指南](agents/opencode/docs/setup.md)
+各方案的启动方式请参考对应的通道文档。
 
 ## 项目结构
 
@@ -53,9 +98,12 @@ agent-remote-hub/
 
 ## 文档导航
 
-- [整体架构](docs/architecture.md) - 系统架构设计和技术选型
-- [方案对比](docs/comparison.md) - 不同远程控制方案的对比分析
-- [飞书配置指南](docs/feishu-setup.md) - 如何创建和配置飞书应用
+| 文档 | 说明 |
+|---|---|
+| [整体架构](docs/architecture.md) | 系统架构设计、设计原则和技术选型 |
+| [方案对比](docs/comparison.md) | 不同远程控制方案的对比分析 |
+| [飞书配置指南](docs/feishu-setup.md) | 如何创建和配置飞书应用 |
+| [环境配置](agents/opencode/docs/setup.md) | 从零搭建运行环境 |
 
 ## License
 
