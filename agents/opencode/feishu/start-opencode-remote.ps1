@@ -42,6 +42,18 @@ function Get-ListenPortForPid {
     return $null
 }
 
+# Ask Windows for an ephemeral port, then pass that nonzero value explicitly.
+# OpenCode currently treats --port 0 as falsy and falls back to port 4096.
+function Get-FreeTcpPort {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        return ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    } finally {
+        $listener.Stop()
+    }
+}
+
 # True only if the process was launched as "opencode serve". This distinguishes
 # a real server from a TUI instance even if a TUI ever bound a TCP port.
 function Test-IsServeProcess {
@@ -50,35 +62,82 @@ function Test-IsServeProcess {
     return ($cmd -match '\bserve\b')
 }
 
-# Query the opencode serve REST API for the session opencode-lark is bound to.
-# opencode-lark names its sessions "Feishu chat <id>", so we filter by that
-# title and return the most recently updated one. This is reliable even when
-# opencode-lark REUSES an existing session (in which case it prints no
-# "Observing session" line and the sessions.db is WAL-locked from outside).
+# Return the ancestor opencode serve when this script was launched by an agent
+# task running inside that serve. Replacing that bridge from here is unsafe:
+# the old supervisor kills the serve tree, which includes this script.
+function Get-AncestorServeProcess {
+    $processId = $PID
+    for ($depth = 0; $depth -lt 32; $depth++) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+        if (-not $process -or -not $process.ParentProcessId) { return $null }
+        $processId = [int]$process.ParentProcessId
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+        if (-not $parent) { return $null }
+        if ($parent.Name -eq 'opencode.exe' -and [string]$parent.CommandLine -match '\bserve\b') {
+            return $parent
+        }
+    }
+    return $null
+}
+
+# Read the exact session opencode-lark starts observing after a Feishu message,
+# then verify via the serve API that it belongs to the requested project.
 function Get-FeishuSessionId {
-    param([int]$Port)
+    param(
+        [int]$Port,
+        [string]$Directory,
+        [string]$LogPath
+    )
+    if (-not (Test-Path -LiteralPath $LogPath)) { return $null }
+
+    $sessionId = $null
+    $lines = @(Get-Content -LiteralPath $LogPath -Tail 200 -ErrorAction SilentlyContinue)
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        if ($lines[$i] -match 'Observing session (ses_[A-Za-z0-9]+) for chat ') {
+            $sessionId = $Matches[1]
+            break
+        }
+    }
+    if (-not $sessionId) { return $null }
+
     try {
-        $sessions = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/session" `
+        $session = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/session/$sessionId" `
             -Headers @{ Accept = 'application/json' } -TimeoutSec 3
     } catch {
         return $null
     }
-    $feishu = $sessions | Where-Object { $_.title -like 'Feishu chat*' }
-    if (-not $feishu) { return $null }
-    $newest = $feishu | Sort-Object { $_.time.updated } -Descending | Select-Object -First 1
-    return $newest.id
+    $targetDirectory = [IO.Path]::GetFullPath($Directory).TrimEnd('\', '/')
+    if (-not $session.directory) { return $null }
+    $sessionDirectory = [IO.Path]::GetFullPath([string]$session.directory).TrimEnd('\', '/')
+    if (-not $sessionDirectory.Equals($targetDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host "[!!] Feishu session $sessionId belongs to another directory: $sessionDirectory" -ForegroundColor Red
+        return $null
+    }
+    return $sessionId
 }
 
 # Detect an already-running opencode serve: an opencode.exe launched with
 # "serve" that owns a listening port. TUI instances are skipped. When several
 # serves are running, prefer the most recently started one (deterministic).
 function Find-ExistingServePort {
+    param([string]$Directory)
+
+    $targetDirectory = [IO.Path]::GetFullPath($Directory).TrimEnd('\', '/')
     $procs = Get-Process -Name opencode -ErrorAction SilentlyContinue |
         Sort-Object StartTime -Descending
     foreach ($proc in $procs) {
         if (-not (Test-IsServeProcess -ProcessId $proc.Id)) { continue }
         $p = Get-ListenPortForPid -ProcessId $proc.Id
-        if ($p) { return $p }
+        if (-not $p) { continue }
+        try {
+            $serverPath = Invoke-RestMethod -Uri "http://127.0.0.1:$p/path" -TimeoutSec 2
+            $serverDirectory = [IO.Path]::GetFullPath([string]$serverPath.directory).TrimEnd('\', '/')
+            if ($serverDirectory.Equals($targetDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+                return $p
+            }
+        } catch {
+            continue
+        }
     }
     return $null
 }
@@ -95,32 +154,42 @@ $script:StartedLark = $null
 $script:StartedTui = $null
 
 try {
-    # When the user explicitly requests a working directory, we must NOT reuse
-    # an existing serve (it may be running in a different cwd, which would
-    # silently ignore -WorkingDir). In that case always start a fresh serve.
+    if ($WorkingDir -and -not (Test-Path -LiteralPath $WorkingDir -PathType Container)) {
+        Write-Host "[!!] Working directory does not exist: $WorkingDir" -ForegroundColor Red
+        exit 1
+    }
+    $effectiveCwd = if ($WorkingDir) { (Resolve-Path -LiteralPath $WorkingDir).Path } else { (Get-Location).Path }
+
+    $ancestorServe = Get-AncestorServeProcess
+    if ($ancestorServe) {
+        Write-Host "[!!] Refusing to switch projects from inside an OpenCode task." -ForegroundColor Red
+        Write-Host "     This script is a descendant of serve PID $($ancestorServe.ProcessId)." -ForegroundColor Red
+        Write-Host "     Replacing its bridge would make the old supervisor terminate this task mid-switch." -ForegroundColor Cyan
+        Write-Host "     Run this command from an independent PowerShell window instead:" -ForegroundColor Cyan
+        Write-Host "     $($MyInvocation.MyCommand.Path) -WorkingDir `"$effectiveCwd`"" -ForegroundColor Cyan
+        exit 2
+    }
+
+    # Reuse a serve only when its API reports the same project directory.
+    # Sessions are globally persisted, so process age or port alone is unsafe.
+    $port = Find-ExistingServePort -Directory $effectiveCwd
     if ($WorkingDir) {
-        if (-not (Test-Path $WorkingDir)) {
-            Write-Host "[!!] Working directory does not exist: $WorkingDir" -ForegroundColor Red
-            exit 1
-        }
-        $port = $null
-    } else {
-        $port = Find-ExistingServePort
+        Write-Host "[i] Using custom working directory: $effectiveCwd" -ForegroundColor Cyan
     }
 
     if ($port) {
         Write-Host "[OK] Reusing existing opencode serve on port $port" -ForegroundColor Green
     } else {
-        Write-Host "[..] Starting opencode serve (random port)..." -ForegroundColor Yellow
+        $requestedPort = Get-FreeTcpPort
+        Write-Host "[..] Starting opencode serve on free port $requestedPort..." -ForegroundColor Yellow
         $serveArgs = @{
             FilePath = $OpencodeExe
-            ArgumentList = "serve"
+            ArgumentList = "serve --port $requestedPort"
             WindowStyle = "Hidden"
             PassThru = $true
         }
         if ($WorkingDir) {
-            $serveArgs.WorkingDirectory = $WorkingDir
-            Write-Host "[i] Using custom working directory: $WorkingDir" -ForegroundColor Cyan
+            $serveArgs.WorkingDirectory = $effectiveCwd
         }
         $script:StartedServe = Start-Process @serveArgs
 
@@ -175,13 +244,13 @@ try {
     # Normalize the path first (Resolve-Path) so that different spellings of the
     # SAME directory — trailing slash, case differences, relative paths — all
     # hash to the same value. Otherwise the session bindings would split.
-    $effectiveCwd = if ($WorkingDir) { (Resolve-Path -LiteralPath $WorkingDir).Path } else { (Get-Location).Path }
     $cwdBytes = [Text.Encoding]::UTF8.GetBytes($effectiveCwd.ToLowerInvariant())
     $cwdStream = [IO.MemoryStream]::new($cwdBytes)
     $cwdHash = (Get-FileHash -InputStream $cwdStream -Algorithm SHA256).Hash.Substring(0, 16)
     $cwdStream.Dispose()
     $LarkDataDir = Join-Path $env:USERPROFILE ".config\opencode-lark\$cwdHash"
     if (-not (Test-Path $LarkDataDir)) { New-Item -ItemType Directory -Path $LarkDataDir -Force | Out-Null }
+    $env:OPENCODE_CWD = $effectiveCwd
     Write-Host "[i] opencode-lark data dir: $LarkDataDir (cwd=$effectiveCwd)" -ForegroundColor DarkGray
 
     # opencode-lark binds a single webhook on port 3001, so only ONE instance
@@ -202,10 +271,14 @@ try {
         $holderPid = ($existing | Select-Object -First 1).OwningProcess
         $holderProc = Get-Process -Id $holderPid -ErrorAction SilentlyContinue
         $holderName = $holderProc.ProcessName
-        if ($holderName -and ($holderName -eq 'bun' -or $holderName -eq 'opencode-lark')) {
+        $holderInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$holderPid" -ErrorAction SilentlyContinue
+        $holderCommandLine = [string]$holderInfo.CommandLine
+        $isLarkBridge = $holderName -eq 'opencode-lark' -or
+            ($holderName -eq 'bun' -and $holderCommandLine -match 'opencode-lark')
+        if ($isLarkBridge) {
             Write-Host "[..] Port $larkWebhookPort is in use by $holderName (PID $holderPid). Stopping old bridge..." -ForegroundColor Yellow
-            Stop-Process -Id $holderPid -Force -ErrorAction SilentlyContinue
-            Get-Process -Name opencode-lark -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            $bridgeRootPid = if ($holderName -eq 'bun') { $holderInfo.ParentProcessId } else { $holderPid }
+            taskkill /PID $bridgeRootPid /T /F 2>$null | Out-Null
             for ($i = 0; $i -lt 10; $i++) {
                 Start-Sleep -Milliseconds 500
                 if (-not (Get-NetTCPConnection -LocalPort $larkWebhookPort -State Listen -ErrorAction SilentlyContinue)) { break }
@@ -248,42 +321,25 @@ try {
     }
     Write-Host "[OK] opencode-lark started (PID $($larkProc.Id))" -ForegroundColor Green
 
-    # Wait for opencode-lark to bind its Feishu session, then read the session
-    # id straight from the serve REST API (not from stdout or the WAL-locked db).
-    # Also bail out early if opencode-lark crashes during the wait.
-    $sessionId = $null
-    for ($i = 0; $i -lt 15; $i++) {
-        Start-Sleep -Seconds 1
-        $sessionId = Get-FeishuSessionId -Port $port
-        if ($sessionId) { break }
-        $larkProc.Refresh()
-        if ($larkProc.HasExited) {
-            Write-Host "[!!] opencode-lark crashed while waiting for session." -ForegroundColor Red
-            break
-        }
-    }
-
-    if ($sessionId) {
-        Write-Host "[OK] opencode-lark bound to session: $sessionId" -ForegroundColor Green
-        Write-Host "[..] Starting TUI attached to same session..." -ForegroundColor Green
-        $script:StartedTui = Start-Process -FilePath $OpencodeExe -ArgumentList "attach", "http://127.0.0.1:$port", "--session", $sessionId -WindowStyle Normal -PassThru
-    } else {
-        Write-Host "[!!] Could not detect session ID. TUI not started automatically." -ForegroundColor Yellow
-        Write-Host "   You can manually attach later:" -ForegroundColor Cyan
-        Write-Host "   opencode attach http://127.0.0.1:$port --session <session_id>" -ForegroundColor Cyan
-    }
-
-    # Keep the script running until opencode-lark exits. Ctrl+C (or closing the
-    # window) breaks out of this loop and runs the finally block, which stops
-    # whatever THIS script started.
+    # opencode-lark creates a session lazily when the first Feishu message
+    # arrives. Keep checking while the bridge runs and attach the TUI once.
     Write-Host "" 
     Write-Host "[..] Running. opencode-lark PID $($larkProc.Id)." -ForegroundColor Yellow
+    Write-Host "    Waiting for the first Feishu session before starting TUI." -ForegroundColor Yellow
     Write-Host "    Press Ctrl+C here to stop everything this script started." -ForegroundColor Yellow
     while ($true) {
         $larkProc.Refresh()
         if ($larkProc.HasExited) {
             Write-Host "[!!] opencode-lark has exited." -ForegroundColor Red
             break
+        }
+        if (-not $script:StartedTui) {
+            $sessionId = Get-FeishuSessionId -Port $port -Directory $effectiveCwd -LogPath $larkLogOut
+            if ($sessionId) {
+                Write-Host "[OK] Found project Feishu session: $sessionId" -ForegroundColor Green
+                Write-Host "[..] Starting TUI attached to same session..." -ForegroundColor Green
+                $script:StartedTui = Start-Process -FilePath $OpencodeExe -ArgumentList "attach", $serverUrl, "--session", $sessionId -WorkingDirectory $effectiveCwd -WindowStyle Normal -PassThru
+            }
         }
         Start-Sleep -Seconds 2
     }

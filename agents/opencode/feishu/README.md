@@ -152,12 +152,12 @@ opencode-lark --version
 ```
 
 脚本会自动：
-1. 检测是否已有 `opencode serve` 在运行
-2. 如果没有，启动一个新的 serve（随机端口）
+1. 检测是否已有工作目录与目标项目一致的 `opencode serve` 在运行
+2. 如果没有匹配项，启动一个新的 serve（随机端口）
 3. 自动发现 serve 监听的端口
 4. 如果端口 3001 已被占用，且占用进程是 `bun`/`opencode-lark`（旧桥接残留），自动停掉旧桥接
 5. 启动 opencode-lark 并连接到该端口
-6. 自动拉起绑定飞书 session 的 TUI 窗口
+6. 收到第一条飞书消息、创建/绑定 session 后，自动拉起对应的 TUI 窗口
 7. **保持运行**，脚本窗口会一直阻塞，直到你按 Ctrl+C 或 opencode-lark 退出
 8. 退出时（Ctrl+C）自动清理**本脚本启动的** serve、opencode-lark（含其 `bun` 子进程）和 TUI；复用的已有 serve 不会动
 
@@ -194,13 +194,15 @@ cd C:\Anywhere
 
 这样无论你在哪个目录运行脚本，serve 都会以你指定的目录作为项目根目录。
 
-> 说明：传入 `-WorkingDir` 时，脚本会强制启动新的 serve（不会复用已有 serve），以确保 cwd 一定是你指定的目录。
+> 说明：脚本只会复用 API 返回的工作目录与 `-WorkingDir` 完全一致的 serve；没有匹配项时才启动新的 serve，确保 cwd 不会串到其他项目。
+
+> **不要让正在运行的 OpenCode/飞书会话执行本脚本来切换项目。** 该任务是旧 serve 的子进程；切换 bridge 后，旧管理脚本会清理整个 serve 进程树，导致切换任务被中途终止。脚本会检测这种调用并安全退出。请在独立 PowerShell 窗口中执行切换命令。
 
 ### 手动启动
 
 ```powershell
-# 1. 启动 serve（随机端口）
-opencode serve
+# 1. 启动 serve（示例端口；一键脚本会自动选择空闲端口）
+opencode serve --port 49152
 
 # 2. 查看 serve 监听的端口
 Get-NetTCPConnection -State Listen | Where-Object { $_.OwningProcess -eq (Get-Process opencode).Id }
@@ -218,18 +220,16 @@ opencode-lark
 
 `start-opencode-remote.ps1` 会自动完成绑定，你**无需手动操作**：
 
-1. 启动（或复用）`opencode serve`，拿到随机端口（传 `-WorkingDir` 时会强制新启）
+1. 启动（或复用工作目录一致的）`opencode serve`，拿到监听端口
 2. 启动 `opencode-lark`，等它绑定/复用飞书 session
-3. 通过 serve 的 REST API（`GET /session`）查找标题以 `Feishu chat` 开头、最近更新的 session
+3. 从 opencode-lark 的 `Observing session <id> for chat <id>` 日志取得精确 session ID，并通过 serve API 校验其项目目录
 4. 自动执行 `opencode attach <url> --session <id>` 拉起一个绑定同一 session 的 TUI 窗口
 
 也就是说，直接运行脚本，就会同时得到「飞书遥控」和「本地 TUI」，且两者共享上下文。
 
 ### session 是怎么被发现的？
 
-opencode-lark 给自己的 session 起的标题固定是 `Feishu chat <chat_id>`。脚本用这个特征从 serve API 里过滤出来，因此**即使 opencode-lark 复用的是已存在的 session**（`is_bound: 1`，不会打印 `Observing session` 日志），也能可靠拿到 ID。
-
-> 早期版本靠解析 opencode-lark 的 stdout 日志找 session，但复用会话时不会打印该日志，所以会失败。现在改用 API 查询，不再依赖日志或被 WAL 锁住的 `sessions.db`。
+opencode-lark 在收到飞书消息并开始观察对应 session 时，会固定输出 `Observing session <id> for chat <id>`。脚本从本次启动的独立日志中读取该 ID，再调用 `GET /session/<id>` 校验 session 的 `directory` 与目标项目一致。这样不会靠标题和更新时间猜测，也不会直接读取或修改 WAL 模式下的 `sessions.db`。
 
 ### 手动绑定（备用）
 
