@@ -12,14 +12,14 @@ OpenCode 是一个终端 AI 编程助手，通过 HTTP API 提供对话能力。
        ▼
 ┌─────────────────┐
 │  桥接服务        │  ← 通道 ↔ OpenCode 桥接
-│  (固定端口)      │     如 opencode-lark (3001)
+│  (通道相关连接)  │     如 opencode-lark (本地 3001)
 └──────┬──────────┘
        │ HTTP API + SSE
        ▼
 ┌─────────────────┐
 │  opencode serve │  ← AI 引擎（随机端口）
 └──────┬──────────┘
-       │ stdin/stdout
+       │ HTTP API + SSE
        ▼
 ┌─────────────────┐
 │  opencode TUI   │  ← 本地终端界面（可选）
@@ -38,14 +38,14 @@ OpenCode 是一个终端 AI 编程助手，通过 HTTP API 提供对话能力。
 
 | 通道 | 状态 | 文档 |
 |---|---|---|
-| 飞书（Feishu） | ✅ 可用 | [feishu/](feishu/) |
-| Telegram | 🔜 规划中 | — |
+| 飞书（Feishu） | ⚠️ 可用，存在消息重放风险 | [使用文档](feishu/) · [可靠性记录](../../docs/feishu-reliability.md) |
+| Telegram | 🧪 已完成调研，待 PoC | [调研报告](../../docs/telegram-bot-research.md) |
 
 ## 会话管理
 
 ### 会话持久化
 
-- **对话历史**: 存储在 `~/.local/share/opencode/storage/`，独立于 serve 进程
+- **对话历史**: 当前存储在 `~/.local/share/opencode/opencode.db`，独立于 serve 进程
 - **通道映射**: 各通道的桥接服务维护"通道会话 ↔ OpenCode session"的对应关系
 - **项目隔离**: session 按 serve 启动时的工作目录（cwd）隔离
 
@@ -77,6 +77,10 @@ cd feishu
 
 详细配置请参考 [飞书通道文档](feishu/README.md)。
 
+### Telegram
+
+当前尚未在本仓库提供启动脚本。候选实现、网络要求和验证计划见 [OpenCode Telegram Bot 调研](../../docs/telegram-bot-research.md)。
+
 ## 环境配置
 
 首次使用需要安装相关依赖。环境配置分为两部分：
@@ -90,3 +94,5 @@ cd feishu
 
 - [OpenCode 官方文档](https://github.com/opencode-ai/opencode)
 - [opencode-lark 项目](https://github.com/guazi04/opencode-lark)
+- [飞书通道可靠性记录](../../docs/feishu-reliability.md)
+- [OpenCode Telegram Bot 调研](../../docs/telegram-bot-research.md)

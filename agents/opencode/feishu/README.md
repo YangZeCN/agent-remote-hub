@@ -2,13 +2,15 @@
 
 通过飞书（Feishu）远程操控 OpenCode AI 助手，实现手机端随时随地的代码协作。
 
+> **可靠性提示**：当前 `opencode-lark` 存在已确认的延迟 ACK 与去重窗口问题，同一条飞书消息可能在数小时后被重新提交给 OpenCode。执行发布、推送、删除等不可逆操作前请保留人工确认。根因、临时处置和上游修复建议见 [飞书通道可靠性记录](../../../docs/feishu-reliability.md)。
+
 ## 架构原理
 
 ```
 ┌─────────────┐
 │  飞书客户端  │  ← 手机/电脑
 └──────┬──────┘
-       │ WebSocket
+   │ 飞书消息协议
        ▼
 ┌─────────────────────┐
 │  飞书开放平台        │  ← 消息路由
@@ -17,14 +19,14 @@
        ▼
 ┌─────────────────────┐
 │  opencode-lark      │  ← 飞书 ↔ OpenCode 桥接
-│  (端口 3001)        │
+│  (本地监听 3001)    │
 └──────┬──────────────┘
        │ HTTP API + SSE
        ▼
 ┌─────────────────────┐
 │  opencode serve     │  ← AI 引擎（随机端口）
 └──────┬──────────────┘
-       │ stdin/stdout
+   │ HTTP API + SSE
        ▼
 ┌─────────────────────┐
 │  opencode TUI       │  ← 本地终端界面（可选）
@@ -39,7 +41,7 @@
 
 ### 会话持久化
 
-- **对话历史**: 存储在 `~/.local/share/opencode/storage/`，独立于 serve 进程
+- **对话历史**: 当前 OpenCode 将数据存储在 `~/.local/share/opencode/opencode.db`（以及 SQLite WAL 文件），独立于 serve 进程
 - **飞书映射**: opencode-lark 的 `~/.config/opencode-lark/<hash>/data/sessions.db` 记录"飞书会话 ↔ OpenCode session"的对应关系（按项目 cwd 哈希隔离）
 - **项目隔离**: session 按 serve 启动时的工作目录（cwd）隔离
 
@@ -47,103 +49,22 @@
 
 ### 前置条件
 
-- Node.js + npm
-- Bun（opencode-lark 依赖）
-- opencode（AI 引擎）
-- opencode-lark（飞书桥接）
-- 飞书应用凭证（App ID + App Secret）
+- Node.js 20 或更高版本。
+- Bun、OpenCode 和 `opencode-lark`。
+- 已发布并完成权限配置的飞书应用。
 
-### 新电脑环境配置（从零搭建）
+首次安装参考 [环境配置指南](../docs/setup.md) 和 [飞书应用创建指南](../../../docs/feishu-setup.md)。本页不重复维护安装步骤。
 
-以下按顺序执行，完成后即可运行 `.\start-opencode-remote.ps1`。
-
-#### 1. 安装 Node.js
-
-从 [Node.js 官网](https://nodejs.org/) 下载 LTS 版本安装（建议 >= 20）。安装后验证：
+启动前可快速验证：
 
 ```powershell
 node -v
-npm -v
-```
-
-#### 2. 安装 Bun
-
-Bun 是 opencode-lark 的运行环境。在 PowerShell 中执行：
-
-```powershell
-powershell -c "irm bun.sh/install.ps1 | iex"
-```
-
-安装后验证（默认装在 `~/.bun/bin`）：
-
-```powershell
-bun --version
-```
-
-> 如果 `bun` 命令找不到，把 `C:\Users\<你的用户名>\.bun\bin` 加到系统 PATH。
-
-#### 3. 安装 opencode
-
-```powershell
-npm install -g opencode-ai
-opencode --version
-```
-
-> 脚本实际调用的是 `opencode.exe`，路径为 `%APPDATA%\npm\node_modules\opencode-ai\bin\opencode.exe`。
-
-#### 4. 安装 opencode-lark
-
-```powershell
-bun add -g opencode-lark
-```
-
-安装后验证：
-
-```powershell
-opencode-lark --version
-```
-
-> 实际二进制在 `~/.bun/bin/opencode-lark.exe`。
-
-#### 5. 配置飞书应用凭证
-
-opencode-lark 需要飞书应用的 App ID 和 App Secret 才能连接飞书。
-
-**方式 A：QR 扫码（推荐，最简单）**
-
-```powershell
-opencode-lark run
-```
-
-首次运行会弹出二维码，用飞书扫码即可自动创建应用并完成配置。
-
-**方式 B：手动配置**
-
-1. 登录 [飞书开放平台](https://open.feishu.cn/)，创建一个企业自建应用
-2. 在「凭证与基础信息」页面获取 **App ID** 和 **App Secret**
-3. 在应用后台开启以下权限/能力：
-   - 机器人能力
-   - 事件订阅（WebSocket 模式）
-   - 消息收发权限
-4. 发布应用版本
-5. 设置环境变量（或写入 opencode-lark 的配置文件）：
-
-```powershell
-$env:LARK_APP_ID = "你的 App ID"
-$env:LARK_APP_SECRET = "你的 App Secret"
-```
-
-#### 6. 验证环境
-
-```powershell
-# 检查所有依赖
-node -v
 bun --version
 opencode --version
-opencode-lark --version
+Get-Item "$env:USERPROFILE\.bun\bin\opencode-lark.exe"
 ```
 
-全部有输出后，就可以运行一键启动脚本了。
+> 当前 `opencode-lark` 没有独立的 `--version` 行为；执行 `opencode-lark --version` 会直接启动 bridge，不要用它检查版本。
 
 ### 一键启动
 
@@ -167,50 +88,21 @@ opencode-lark --version
 
 #### 指定项目目录
 
-默认情况下，`opencode serve` 会继承运行脚本时 PowerShell 的当前目录（cwd）。由于 opencode 的 session 按 cwd 隔离，**在不同目录下运行脚本，对应的是不同项目的上下文**。
-
-**具体例子：**
-
-```powershell
-# 场景 A：不加参数，继承当前目录
-cd C:\Projects\MyApp
-.\C:\Users\MrYang\Desktop\RemoteCopilot\start-opencode-remote.ps1
-# → serve 的项目根是 C:\Projects\MyApp（继承当前目录）
-# → 飞书消息会操作 MyApp 的代码
-
-# 场景 B：加 -WorkingDir 参数，指定任意项目目录
-#    无论当前在哪个目录，serve 都会使用你指定的路径
-cd C:\Anywhere
-.\C:\Users\MrYang\Desktop\RemoteCopilot\start-opencode-remote.ps1 -WorkingDir "C:\Projects\MyApp"
-# → serve 的项目根是 C:\Projects\MyApp（你指定的路径）
-# → 飞书消息会操作 MyApp 的代码
-```
-
-使用 `-WorkingDir` 参数可以显式指定 opencode serve 的工作目录：
+默认情况下，`opencode serve` 使用当前 PowerShell 目录。由于 OpenCode session 按工作目录隔离，建议显式传入项目路径：
 
 ```powershell
 .\start-opencode-remote.ps1 -WorkingDir "C:\Projects\MyApp"
 ```
 
-这样无论你在哪个目录运行脚本，serve 都会以你指定的目录作为项目根目录。
-
-> 说明：脚本只会复用 API 返回的工作目录与 `-WorkingDir` 完全一致的 serve；没有匹配项时才启动新的 serve，确保 cwd 不会串到其他项目。
+脚本只复用 API 返回目录与目标目录完全一致的 serve；没有匹配项时才启动新实例。
 
 > **不要让正在运行的 OpenCode/飞书会话执行本脚本来切换项目。** 该任务是旧 serve 的子进程；切换 bridge 后，旧管理脚本会清理整个 serve 进程树，导致切换任务被中途终止。脚本会检测这种调用并安全退出。请在独立 PowerShell 窗口中执行切换命令。
 
 ### 手动启动
 
-```powershell
-# 1. 启动 serve（示例端口；一键脚本会自动选择空闲端口）
-opencode serve --port 49152
+不建议手动拼接启动命令。除了 `OPENCODE_SERVER_URL`，脚本还负责设置 `OPENCODE_CWD`、按项目创建 bridge 数据目录、校验复用的 serve、处理端口 3001 冲突和清理进程。遗漏其中任一步都可能导致项目串线或 session 映射分裂。
 
-# 2. 查看 serve 监听的端口
-Get-NetTCPConnection -State Listen | Where-Object { $_.OwningProcess -eq (Get-Process opencode).Id }
-
-# 3. 设置环境变量并启动 opencode-lark
-$env:OPENCODE_SERVER_URL = "http://127.0.0.1:<端口>"
-opencode-lark
-```
+如需调试，请先运行一键脚本，再根据输出中的 Server URL、数据目录和日志路径检查对应进程。
 
 ## TUI 与 Serve 绑定
 
@@ -233,20 +125,13 @@ opencode-lark 在收到飞书消息并开始观察对应 session 时，会固定
 
 ### 手动绑定（备用）
 
-如果脚本未能自动拉起 TUI，可以手动连接：
+如果脚本没有自动拉起 TUI，从脚本输出或 `%TEMP%\opencode-lark-stdout.log` 中取得 `Observing session <id> for chat <id>` 对应的 session ID，再连接脚本输出的 Server URL：
 
 ```powershell
-# 1. 查看 serve 端口
-$port = (Get-NetTCPConnection -State Listen | Where-Object { $_.OwningProcess -eq (Get-Process opencode).Id }).LocalPort
-
-# 2. 从 API 里找飞书 session ID
-$sid = (Invoke-RestMethod "http://127.0.0.1:$port/session" -Headers @{Accept='application/json'} |
-    Where-Object { $_.title -like 'Feishu chat*' } |
-    Sort-Object { $_.time.updated } -Descending | Select-Object -First 1).id
-
-# 3. 用 attach + session ID 启动 TUI
-opencode attach "http://127.0.0.1:$port" --session $sid
+opencode attach "http://127.0.0.1:<脚本输出的端口>" --session <日志中的-session-id>
 ```
+
+不要按 session 标题或“最近更新时间”猜测；不同项目或其他客户端可能产生相似标题。
 
 ### 验证绑定
 
@@ -264,11 +149,7 @@ opencode attach "http://127.0.0.1:$port" --session $sid
 - 旧版本脚本没有清理逻辑
 - 手动启动的 serve（脚本不会动它）
 
-手动清理（含 opencode-lark 及其 `bun` 子进程）：
-```powershell
-# 杀掉所有 opencode 相关进程（包括持有端口 3001 的 bun）
-Get-Process opencode,opencode-lark,bun -ErrorAction SilentlyContinue | Stop-Process -Force
-```
+不要批量停止所有 `opencode` 或 `bun` 进程，这可能误伤其他项目和工具。优先关闭原启动窗口；旧 bridge 占用 3001 时，重新运行脚本会先校验进程身份，再只清理对应的 bridge 进程树。
 
 ### Q: 飞书和 TUI 的上下文不共享？
 
@@ -283,32 +164,34 @@ Get-Process opencode,opencode-lark,bun -ErrorAction SilentlyContinue | Stop-Proc
 
 **原因**：opencode-lark 用其工作目录下的 `data/sessions.db` 保存"飞书群聊 → opencode session"的映射。如果这个 data 目录发生变化（例如从旧的 `<项目>/data` 切换到了 `~/.config/opencode-lark/<hash>/data`，或换了 `-WorkingDir` / 从不同 cwd 启动导致哈希不同），opencode-lark 会读到一个**空的映射库**，找不到"接着用哪个 session"，于是**新建一个 session**。而 TUI 检测到的仍是旧 session，两边就分裂了。
 
-**恢复（保留历史）**：把带历史的旧 `data` 覆盖到脚本当前正在用的目录即可。
+**恢复（保留历史）**：不要直接覆盖数据库。先停止 bridge，并备份所有候选数据目录：
 
 1. 先停掉 opencode-lark（连 `bun` 子进程一起）释放数据库锁：
    ```powershell
    Get-Process opencode-lark,bun -ErrorAction SilentlyContinue | Stop-Process -Force
    ```
-2. 算出当前 cwd 对应的 hash 目录（与脚本算法一致）：
+2. 算出当前项目对应的数据目录（与脚本算法一致）：
    ```powershell
    $cwd = (Get-Location).Path
    $ms = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($cwd.ToLowerInvariant()))
    $hash = (Get-FileHash -InputStream $ms -Algorithm SHA256).Hash.Substring(0,16); $ms.Dispose()
    $dst = "$env:USERPROFILE\.config\opencode-lark\$hash\data"
    ```
-3. 用旧 data 覆盖 hash 目录（`sessions.db` 的 db/-wal/-shm 三个文件一起拷，保证一致）：
+3. 备份当前目标目录：
    ```powershell
-   Copy-Item "$cwd\data\*" $dst -Force
+   Copy-Item $dst "$dst.backup" -Recurse
    ```
-4. 重跑脚本，opencode-lark 会读回原映射、复用老 session，TUI 也会检测到同一个，恢复同步。
+4. 对其他疑似旧目录也分别做完整备份。不要只凭文件大小或修改时间判断哪份数据正确，也不要单独复制 `sessions.db-wal` 或 `sessions.db-shm`。
+5. 使用 SQLite 工具核对实际 chat/session 映射。确认来源后，再在 bridge 已停止的情况下迁移完整 `data` 目录。
+6. 重跑脚本，在飞书发送测试消息，并确认日志中的 session ID 与预期一致。
 
-**如何判断哪份是历史**：`sessions.db-wal` 文件更大、修改时间更早的那份是真历史；刚创建、很小的是空库。把大的那份覆盖到脚本当前使用的目录即可。
+如果无法确认数据库内容，保留备份并新建 session 比猜测后覆盖更安全。
 
 > **不想保留历史**：直接在飞书发条新消息让它在新 session 上重新开始，再重跑脚本让 TUI attach 到这个新 session 即可，老对话丢弃。
 
 ### Q: 重启电脑后，之前的对话还在吗？
 
-**A**: 在。对话历史持久化在磁盘（`~/.local/share/opencode/storage/`），不依赖 serve 进程。只要从同一个目录启动 serve，session 作用域就一致，上下文能续上。
+**A**: 在。对话历史持久化在磁盘（当前为 `~/.local/share/opencode/opencode.db`），不依赖 serve 进程。只要从同一个目录启动 serve，session 作用域就一致，上下文能续上。
 
 ### Q: 多个飞书群聊，上下文会混吗？
 
@@ -364,19 +247,6 @@ OpenCode 支持一些斜杠命令（如 `/new`、`/models` 等），在 OpenCode
 | 命令注册机制 | 需要开发"机器人菜单"按钮 | BotFather 注册命令列表即可 |
 | 手动输入命令发送 | ✅ 可以正常工作 | ✅ 可以正常工作 |
 
-### Telegram 斜杠命令的工作原理
-
-Telegram 的命令提示是**预先注册在 Telegram 服务器上的静态列表**：
-
-1. **注册阶段**（一次性）：开发者通过 BotFather 注册命令列表（如 `/new - 新建会话`），保存在 Telegram 服务器
-2. **提示阶段**：用户输入 `/` 时，Telegram 客户端向服务器查询该 Bot 的命令列表，弹出菜单供选择
-3. **执行阶段**：用户选择命令后，Telegram 发送纯文本（如 `/new`）给 Bot，Bot 转发给 OpenCode
-
-**关键点**：
-- 命令列表是静态的，不会动态变化
-- Bot 进程不参与命令提示，只负责接收和处理文本
-- 如果 OpenCode 新增了 Skills（如 `/deploy`），Telegram 的命令菜单**不会自动显示**，需要手动去 BotFather 更新
-
 ### 改进方向
 
 | 方案 | 难度 | 效果 |
@@ -392,12 +262,26 @@ Telegram 的命令提示是**预先注册在 Telegram 服务器上的静态列�
 - **功能不受影响**：手动输入 `/new`、`/models` 等命令在飞书中完全可用
 - **手机端使用**：如果主要在手机上操作，建议记住常用命令，或考虑切换到 Telegram
 - **后续优化**：可以通过消息卡片按钮或机器人菜单来改善飞书的交互体验
+- Telegram 的完整交互和网络评估见 [OpenCode Telegram Bot 调研](../../../docs/telegram-bot-research.md)
+
+## 已知限制：消息重放
+
+飞书平台可能在 WebSocket ACK 不及时后重新投递旧事件。当前 bridge 会等待较长的 OpenCode 业务处理，而且持久化去重窗口只有 60 秒，因此数小时后的重放可能再次触发相同 Prompt。
+
+这不是启动脚本能够完整修复的问题。当前建议：
+
+- 不让无人值守任务直接执行部署、推送或删除等不可逆操作。
+- 尽量让自动化命令具备幂等性。
+- 发现旧命令再次执行时先中止 Agent，并从日志核对相同的 `message_id`。
+- 跟踪上游问题 [guazi04/opencode-lark#12](https://github.com/guazi04/opencode-lark/issues/12)。
+
+完整分析和验收条件见 [飞书通道可靠性记录](../../../docs/feishu-reliability.md)。
 
 ## 文件说明
 
 - `start-opencode-remote.ps1` - 一键启动脚本
 - `~/.config/opencode-lark/<hash>/data/` - opencode-lark 数据目录（sessions.db, memory.db），按项目 cwd 哈希隔离
-- `~/.local/share/opencode/` - OpenCode 全局存储（session 历史）
+- `~/.local/share/opencode/opencode.db` - OpenCode 全局数据库（包含 session 历史）
 
 > **数据目录说明**：脚本会根据当前工作目录（或 `-WorkingDir` 指定的目录）的 SHA256 哈希，在 `~/.config/opencode-lark/` 下创建对应的子目录。同一项目目录始终复用同一份数据，不同项目目录互不干扰。
 
@@ -406,3 +290,5 @@ Telegram 的命令提示是**预先注册在 Telegram 服务器上的静态列�
 - [OpenCode 官方文档](https://github.com/opencode-ai/opencode)
 - [opencode-lark 项目](https://github.com/guazi04/opencode-lark)
 - [飞书开放平台](https://open.feishu.cn/)
+- [飞书通道可靠性记录](../../../docs/feishu-reliability.md)
+- [OpenCode Telegram Bot 调研](../../../docs/telegram-bot-research.md)

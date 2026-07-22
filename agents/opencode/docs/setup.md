@@ -70,10 +70,12 @@ bun add -g opencode-lark
 安装后验证：
 
 ```powershell
-opencode-lark --version
+Get-Item "$env:USERPROFILE\.bun\bin\opencode-lark.exe"
 ```
 
 > 实际二进制在 `~/.bun/bin/opencode-lark.exe`。
+>
+> 当前 `opencode-lark` 不支持只打印版本的 `--version` 行为；该参数会启动 bridge。
 
 #### 配置飞书应用凭证
 
@@ -108,12 +110,14 @@ $env:LARK_APP_SECRET = "你的 App Secret"
 #### 验证飞书通道环境
 
 ```powershell
-opencode-lark --version
+Get-Item "$env:USERPROFILE\.bun\bin\opencode-lark.exe"
 ```
 
 ### Telegram
 
-> 🔜 待补充
+当前尚未在本仓库落地 Telegram 启动脚本。推荐候选要求 Node.js 20 或更高版本，Bot 主机还必须能够访问 Telegram Bot API。
+
+候选实现、代理配置和 PoC 步骤见 [OpenCode Telegram Bot 调研](../../../docs/telegram-bot-research.md)。
 
 ---
 
@@ -122,3 +126,4 @@ opencode-lark --version
 环境配置完成后，参考对应通道的文档启动远程控制：
 
 - [飞书通道文档](../feishu/README.md)
+- [Telegram Bot 调研](../../../docs/telegram-bot-research.md)

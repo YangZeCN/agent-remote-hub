@@ -46,8 +46,8 @@
 │            存储层（Storage Layer）                │
 │  ┌──────────────────────────────────────────┐  │
 │  │  会话存储                                 │  │
-│  │  - ~/.local/share/opencode/              │  │
-│  │  - 通道映射数据库（sessions.db）         │  │
+│  │  - OpenCode: ~/.local/share/opencode/    │  │
+│  │  - 通道映射: 各通道独立维护              │  │
 │  └──────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────┘
 ```
@@ -82,17 +82,23 @@ OpenCode 的 session 按工作目录（cwd）隔离。不同项目的会话互�
 
 #### 通道级隔离
 
-每个通道的桥接服务维护独立的映射数据库：
+每个通道的桥接服务维护独立的映射数据库，具体实现因通道而异：
 
+**OpenCode + 飞书（opencode-lark）**：
 ```
 ~/.config/opencode-lark/<hash>/data/sessions.db
 ```
-
 其中 `<hash>` 是工作目录路径的 SHA256 哈希值（前 16 位）。
+
+**OpenCode + Telegram（grinev/opencode-telegram-bot）**：
+```
+~/.config/opencode-telegram-bot/settings.json
+```
+使用 JSON 配置文件存储项目、会话和设置。
 
 **隔离效果**：
 - 同一项目 + 同一通道 = 复用同一份数据
-- 不同项目 = 不同的 hash = 隔离的数据目录
+- 不同项目 = 隔离的数据目录或配置
 - 切换项目时不会丢失历史会话映射
 
 ### 3. 端口管理策略
@@ -104,12 +110,13 @@ AI 引擎服务（如 `opencode serve`）使用随机端口：
 - 系统自动分配，几乎不会失败
 - 脚本自动检测并连接
 
-#### 固定端口（桥接服务）
+#### 通道相关的桥接连接
 
-桥接服务（如 `opencode-lark`）使用固定端口（如 3001）：
-- 便于飞书等通道配置 webhook
-- 同一时刻只能有一个实例
-- 脚本自动检测并清理旧实例
+桥接服务的连接方式由通道实现决定：
+
+- 当前 `opencode-lark` 在本机使用固定端口 3001，同一时刻只运行一个实例，启动脚本会识别并清理旧实例。
+- `grinev/opencode-telegram-bot` 使用 Telegram 长轮询，不需要 webhook 或公网入站端口；默认从本机连接 `localhost:4096` 的 OpenCode Server。
+- 固定端口不是所有 bridge 的共同要求。无论采用哪种通道，OpenCode API 都应优先只监听本机地址。
 
 ### 4. 进程管理策略
 
@@ -152,11 +159,11 @@ AI 引擎服务（如 `opencode serve`）使用随机端口：
 - 通道映射数据库（sessions.db）
 - 记忆存储（memory.db）
 
-### WebSocket 通信
+### 通道实时通信
 
 **选择理由**：
-- 实时双向通信
-- 飞书、Telegram 等通道原生支持
+- 支持实时或准实时双向通信
+- 飞书 bridge 使用 WebSocket 事件订阅；Telegram 候选实现使用 Bot API 长轮询和 OpenCode SSE
 - 低延迟，适合交互式场景
 
 ## 扩展指南
@@ -202,30 +209,21 @@ AI 引擎服务（如 `opencode serve`）使用随机端口：
 
 ## 故障排查
 
-### 常见问题
+各通道的具体故障排查请参考对应的通道文档：
+
+- [飞书通道故障排查](../agents/opencode/feishu/README.md#常见问题)
+- [飞书通道可靠性记录](feishu-reliability.md)
+- [Telegram Bot 调研](telegram-bot-research.md)
+
+### 通用排查思路
 
 1. **端口冲突**：检查是否有旧实例未清理
-2. **会话分裂**：检查 data 目录是否发生变化
+2. **会话分裂**：检查数据目录是否发生变化
 3. **进程残留**：手动清理或重启脚本
-
-### 调试技巧
-
-1. 查看桥接服务日志：
-   ```powershell
-   Get-Content "$env:TEMP\opencode-lark-stdout.log" -Tail 20 -Wait
-   ```
-
-2. 检查端口占用：
-   ```powershell
-   Get-NetTCPConnection -LocalPort 3001 -State Listen
-   ```
-
-3. 验证会话绑定：
-   ```powershell
-   Invoke-RestMethod "http://127.0.0.1:<port>/session"
-   ```
 
 ## 相关链接
 
 - [方案对比](comparison.md)
 - [飞书配置指南](feishu-setup.md)
+- [飞书通道可靠性记录](feishu-reliability.md)
+- [OpenCode Telegram Bot 调研](telegram-bot-research.md)

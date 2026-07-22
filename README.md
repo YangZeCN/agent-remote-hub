@@ -41,7 +41,7 @@
 
 | | 飞书（Feishu） | Telegram |
 |---|---|---|
-| **OpenCode** | ✅ [可用](agents/opencode/feishu/) | 🔜 规划中 |
+| **OpenCode** | ⚠️ [可用，存在重放风险](agents/opencode/feishu/) | 🧪 [已调研，待 PoC](docs/telegram-bot-research.md) |
 | **VSCode** | 🔜 规划中 | 🔜 规划中 |
 
 ## 快速开始
@@ -54,7 +54,8 @@
 
 | 方案 | 入口 | 说明 |
 |---|---|---|
-| OpenCode + 飞书 | [agents/opencode/feishu/](agents/opencode/feishu/) | 通过飞书远程操控 OpenCode |
+| OpenCode + 飞书 | [agents/opencode/feishu/](agents/opencode/feishu/) | 已落地；使用前阅读[可靠性记录](docs/feishu-reliability.md) |
+| OpenCode + Telegram | [调研报告](docs/telegram-bot-research.md) | 推荐 `grinev/opencode-telegram-bot` 进入 PoC，尚未在本仓库落地 |
 
 ### 2. 环境配置
 
@@ -80,7 +81,9 @@ agent-remote-hub/
 ├── docs/                          # 通用文档
 │   ├── architecture.md            # 整体架构设计
 │   ├── comparison.md              # 方案对比分析
-│   └── feishu-setup.md            # 飞书应用创建指南
+│   ├── feishu-reliability.md      # 飞书消息重放与修复建议
+│   ├── feishu-setup.md            # 飞书应用创建指南
+│   └── telegram-bot-research.md   # OpenCode Telegram Bot 调研
 │
 ├── agents/                        # 按 AI Agent 分类
 │   ├── opencode/                  # OpenCode 方案
@@ -103,6 +106,8 @@ agent-remote-hub/
 | [整体架构](docs/architecture.md) | 系统架构设计、设计原则和技术选型 |
 | [方案对比](docs/comparison.md) | 不同远程控制方案的对比分析 |
 | [飞书配置指南](docs/feishu-setup.md) | 如何创建和配置飞书应用 |
+| [飞书可靠性记录](docs/feishu-reliability.md) | 消息重放问题、根因和修复建议 |
+| [Telegram Bot 调研](docs/telegram-bot-research.md) | 候选项目、网络要求和 PoC 建议 |
 | [环境配置](agents/opencode/docs/setup.md) | 从零搭建运行环境 |
 
 ## License
