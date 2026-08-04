@@ -115,9 +115,59 @@ Get-Item "$env:USERPROFILE\.bun\bin\opencode-lark.exe"
 
 ### Telegram
 
-当前尚未在本仓库落地 Telegram 启动脚本。推荐候选要求 Node.js 20 或更高版本，Bot 主机还必须能够访问 Telegram Bot API。
+#### 安装 opencode-telegram-bot
 
-候选实现、代理配置和 PoC 步骤见 [OpenCode Telegram Bot 调研](../../../docs/telegram-bot-research.md)。
+```powershell
+npm install -g @grinev/opencode-telegram-bot
+```
+
+安装后验证：
+
+```powershell
+opencode-telegram --help
+```
+
+#### 配置 Telegram Bot 凭证
+
+opencode-telegram-bot 需要 Telegram Bot Token 和你的 User ID。
+
+**Bot Token**（从 @BotFather 获取）：
+1. 打开 [@BotFather](https://t.me/BotFather)，发送 `/newbot`
+2. 按提示输入机器人名称和用户名（用户名须以 `bot` 结尾）
+3. BotFather 回复的 `123456789:AAXXXXXXX` 格式字符串即为 Token
+
+**Telegram User ID**（从 @userinfobot 获取）：
+1. 打开 [@userinfobot](https://t.me/userinfobot)，发送任意消息
+2. 回复中 `Id: xxxxxxx` 的数字即为你的 User ID
+
+获取后运行交互式配置：
+
+```powershell
+opencode-telegram config
+```
+
+> 语言选英文（默认）或中文（输入 `7`）均可。OpenCode API URL 直接回车跳过，启动脚本会自动覆盖。
+
+> **多台电脑共用**：同一 Bot Token 可在多台机器上配置，只要不同时运行即可。在新机器上填入相同 Token 和 User ID，Bot 会接管消息接收。
+
+配置会保存在 `%APPDATA%\opencode-telegram-bot\.env`（即 `C:\Users\<你的用户名>\AppData\Roaming\opencode-telegram-bot\.env`）。
+
+#### 网络配置（如需要）
+
+如果本机无法直连 Telegram API，在 `.env` 中配置代理：
+
+```env
+TELEGRAM_PROXY_URL=socks5://127.0.0.1:7890
+```
+
+支持 SOCKS5、SOCKS4、HTTP、HTTPS 代理。详见 [Telegram 通道文档](../telegram/README.md)。
+
+#### 验证 Telegram 通道环境
+
+```powershell
+opencode-telegram --help
+Test-Path "$env:APPDATA\npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js"
+```
 
 ---
 
@@ -126,4 +176,5 @@ Get-Item "$env:USERPROFILE\.bun\bin\opencode-lark.exe"
 环境配置完成后，参考对应通道的文档启动远程控制：
 
 - [飞书通道文档](../feishu/README.md)
+- [Telegram 通道文档](../telegram/README.md)
 - [Telegram Bot 调研](../../../docs/telegram-bot-research.md)
