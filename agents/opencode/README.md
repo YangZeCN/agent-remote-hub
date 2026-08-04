@@ -47,8 +47,8 @@ OpenCode 是一个终端 AI 编程助手，通过 HTTP API 提供对话能力。
 |---|---|---|
 | 运行时 | Bun | Node.js |
 | 入站端口 | 3001（固定） | 不需要（长轮询） |
-| 消息 ACK | ⚠️ 被业务处理阻塞，存在重放风险 | ✅ 协议 ACK 与业务解耦 |
-| 去重机制 | ⚠️ 60 秒 TTL，延迟重放可绕过 | ✅ Telegram Bot API 保证 |
+| 消息接收 | ⚠️ ACK 被业务处理阻塞，存在重放风险 | 长轮询，当前无已确认的同类重放问题 |
+| 业务幂等 | ⚠️ 60 秒 TTL，延迟重放可绕过 | 仍需应用侧保证并通过 PoC 验证 |
 | 移动端命令 | 无原生斜杠命令 | 原生命令 + inline button |
 | 项目切换 | 依赖外围脚本 | 原生支持 |
 | OpenCode 生命周期 | 靠 PowerShell 脚本 | Bot 内置 start/stop/monitor |
@@ -65,7 +65,7 @@ OpenCode 是一个终端 AI 编程助手，通过 HTTP API 提供对话能力。
 └─────────────┘     └─────────────┘
        │                    │
        ▼                    ▼
-┌──────────────     ┌──────────────┐
+┌──────────────┐     ┌──────────────┐
 │ opencode-lark│     │opencode-     │
 │ (Bun, :3001) │     │telegram      │
 │              │     │(Node.js)     │
@@ -78,10 +78,10 @@ OpenCode 是一个终端 AI 编程助手，通过 HTTP API 提供对话能力。
 └──────────────┘     └──────────────┘
 ```
 
-**建议**：
-- 为每个通道使用不同的项目目录
-- 每个通道启动独立的 `opencode serve` 实例
-- 避免两个通道连接到同一个 serve（会导致 session 串线）
+**隔离策略**：
+- Telegram 启动脚本始终创建独立的 `opencode serve`
+- 飞书和 Telegram 可以指向同一项目目录，但不会复用同一个 serve 进程
+- 两个通道的聊天到 OpenCode session 映射仍各自维护
 
 ### 选型建议
 
@@ -102,18 +102,12 @@ OpenCode 是一个终端 AI 编程助手，通过 HTTP API 提供对话能力。
 
 ### 数据目录隔离
 
-OpenCode 的 session 按工作目录隔离。为了避免不同项目之间的会话冲突，桥接服务的数据目录会根据工作目录的哈希值进行隔离：
+OpenCode 的 session 按工作目录隔离。通道自身的配置和映射采用不同策略：
 
-```
-~/.config/opencode-<channel>/<hash>/data/
-```
+- 飞书：`~/.config/opencode-lark/<hash>/data/`，其中 `<hash>` 是工作目录路径 SHA256 的前 16 位
+- Telegram：Windows 下使用 `%APPDATA%\opencode-telegram-bot\` 保存全局配置；启动脚本通过独立 serve 的 cwd 和 `OPENCODE_API_URL` 选择当前项目
 
-例如飞书通道为 `~/.config/opencode-lark/<hash>/data/`。
-
-其中 `<hash>` 是工作目录路径的 SHA256 哈希值（前 16 位）。这样：
-- 同一项目目录始终复用同一份数据
-- 不同项目目录互不干扰
-- 切换项目时不会丢失历史会话映射
+两个通道不会共用映射数据库。Telegram 启动脚本也不会复用飞书的 serve 进程。
 
 ## 快速开始
 

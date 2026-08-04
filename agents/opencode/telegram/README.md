@@ -2,7 +2,7 @@
 
 通过 Telegram 远程操控 OpenCode AI 助手，实现手机端随时随地的代码协作。
 
-> **可靠性**：当前 Telegram 通道未发现类似飞书的消息重放问题。Bot 使用长轮询接收消息，协议 ACK 与业务处理解耦，消息幂等性由 Telegram Bot API 保证。
+> **可靠性**：当前尚未观察到类似飞书通道的延迟重放问题。Bot 使用长轮询接收消息，但 Telegram Bot API 不替代业务幂等；正式迁移前仍应按本文的 PoC 计划验证长任务、断网重连和高风险操作。
 
 ## 架构原理
 
@@ -15,10 +15,10 @@
 ┌─────────────────────┐
 │  opencode-telegram  │  ← Telegram ↔ OpenCode 桥接
 │  (Node.js 进程)     │     无需入站端口
-──────┬──────────────┘
+└─────┬───────────────┘
        │ HTTP API + SSE
        ▼
-─────────────────────┐
+┌─────────────────────┐
 │  opencode serve     │  ← AI 引擎（随机端口）
 └──────┬──────────────┘
    │ HTTP API + SSE
@@ -38,7 +38,7 @@
 
 - **运行时**: Node.js（与飞书通道的 Bun 不同，两者可并行）
 - **入站端口**: 不需要（长轮询模式）
-- **消息 ACK**: 协议 ACK 与业务处理解耦，无已知重放问题
+- **消息接收**: 长轮询模式，当前无已确认的延迟重放问题
 - **移动端命令**: 原生命令 + inline button
 - **项目切换**: 原生支持
 - **OpenCode 生命周期**: Bot 内置 start/stop/monitor
@@ -54,7 +54,7 @@
 
 ### 前置条件
 
-- Node.js 20 或更高版本
+- Node.js 22 或更高版本
 - `opencode-ai` 和 `@grinev/opencode-telegram-bot`
 - 已创建的 Telegram Bot（通过 @BotFather）
 - 你的 Telegram User ID（通过 @userinfobot 获取）
@@ -67,14 +67,14 @@
 ```
 
 脚本会自动：
-1. 检测是否已有工作目录与目标项目一致的 `opencode serve` 在运行
-2. 如果没有匹配项，启动一个新的 serve（随机端口）
+1. 检查 OpenCode、Telegram Bot 配置和本机重复 Bot 进程
+2. 启动 Telegram 专用的 `opencode serve`（随机端口，不复用飞书 serve）
 3. 自动发现 serve 监听的端口
 4. 验证 Telegram Bot 配置（Token、User ID）
-5. 检查 Telegram API 网络连通性
+5. 显示 Telegram 网络模式（直连、代理或反向代理）
 6. 启动 opencode-telegram 并连接到该端口
 7. **保持运行**，脚本窗口会一直阻塞，直到你按 Ctrl+C 或 bot 退出
-8. 退出时（Ctrl+C）自动清理**本脚本启动的** serve 和 bot 进程；复用的已有 serve 不会动
+8. 退出时（Ctrl+C）自动清理本脚本启动的 serve 和 bot 进程
 
 #### 指定项目目录
 
@@ -82,7 +82,7 @@
 .\start-opencode-remote.ps1 -WorkingDir "C:\Projects\MyApp"
 ```
 
-脚本只复用 API 返回目录与目标目录完全一致的 serve；没有匹配项时才启动新实例。
+脚本始终启动独立 serve。即使飞书正在操作同一个项目目录，两个通道也会使用不同端口和不同进程。
 
 ### 首次配置
 
@@ -126,7 +126,7 @@ opencode-telegram config
 如果电脑已有 Clash、Mihomo 或企业代理：
 
 ```env
-# 编辑 ~/.config/opencode-telegram-bot/.env
+# 编辑 %APPDATA%\opencode-telegram-bot\.env
 TELEGRAM_PROXY_URL=socks5://127.0.0.1:7890
 ```
 
@@ -192,11 +192,11 @@ TELEGRAM_FORCE_IPV4=true
 
 ### Q: Telegram 和飞书能同时运行吗？
 
-**A**: 可以。两者使用不同的运行时（Node.js vs Bun）、不同的配置目录、不同的网络协议。建议为每个通道启动独立的 `opencode serve` 实例（不同端口、不同项目目录），完全隔离。
+**A**: 可以。两者使用不同的运行时、配置目录和网络协议。Telegram 启动脚本始终创建专用的 `opencode serve`；即使两个通道使用同一个项目目录，也不会复用同一个 serve 进程。
 
 ### Q: 多台电脑可以共用同一个 Telegram Bot Token 吗？
 
-**A**: 可以，只要不同时使用。Telegram Bot 使用长轮询，同一时刻只有一个实例能接收消息。在电脑 B 上启动 Bot 时，电脑 A 上的 Bot 会自动失去连接（停止接收消息）。只要你不同时在两台电脑上运行，Bot Token 可以跨机器复用，无需为每台电脑创建新 Bot。
+**A**: 可以，只要不同时使用。Telegram Bot 使用长轮询；同一 Token 同时运行多个实例会争抢 updates，并可能产生 `getUpdates` 冲突。Bot Token 可以跨机器复用，但切换前应先停止旧机器上的实例。
 
 切换机器时，只需：
 1. 确认旧机器的 Bot 已停止（或本身就没在运行）
@@ -241,6 +241,6 @@ npm install -g @grinev/opencode-telegram-bot@latest
 ## 相关链接
 
 - [opencode-telegram-bot 项目](https://github.com/grinev/opencode-telegram-bot)
-- [Telegram Bot 调研报告](../../docs/telegram-bot-research.md)
-- [飞书通道可靠性记录](../../docs/feishu-reliability.md)
+- [Telegram Bot 调研报告](../../../docs/telegram-bot-research.md)
+- [飞书通道可靠性记录](../../../docs/feishu-reliability.md)
 - [环境配置指南](../docs/setup.md)

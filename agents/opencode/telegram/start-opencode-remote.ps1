@@ -5,8 +5,8 @@
 # port, then launches opencode-telegram pointed at it. No fixed port required,
 # so there is never a port conflict (e.g. with Kilo Code on 4096).
 #
-# A serve started by THIS script is stopped again when the script exits.
-# An already-running serve that we merely reuse is left untouched.
+# The script always starts a dedicated serve so Telegram stays isolated from
+# other channels, then stops that serve when the script exits.
 #
 # By default, opencode serve inherits the current working directory (cwd) from
 # the PowerShell session that runs this script. Use -WorkingDir to specify a
@@ -19,7 +19,9 @@ param(
 Write-Host "Starting opencode-telegram remote control..." -ForegroundColor Green
 
 # Resolve tool paths from environment variables for portability across users.
-$OpencodeExe = Join-Path $env:APPDATA "npm\node_modules\opencode-ai\bin\opencode.exe"
+$appData = [Environment]::GetEnvironmentVariable('APPDATA', 'Process')
+$OpencodeExe = Join-Path $appData "npm\node_modules\opencode-ai\bin\opencode.exe"
+$TelegramExe = Join-Path $appData "npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js"
 
 # Find the listening TCP port owned by a given process id (opencode serve).
 function Get-ListenPortForPid {
@@ -42,14 +44,6 @@ function Get-FreeTcpPort {
     }
 }
 
-# True only if the process was launched as "opencode serve". This distinguishes
-# a real server from a TUI instance even if a TUI ever bound a TCP port.
-function Test-IsServeProcess {
-    param([int]$ProcessId)
-    $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue).CommandLine
-    return ($cmd -match '\bserve\b')
-}
-
 # Return the ancestor opencode serve when this script was launched by an agent
 # task running inside that serve. Replacing that bridge from here is unsafe:
 # the old supervisor kills the serve tree, which includes this script.
@@ -68,43 +62,38 @@ function Get-AncestorServeProcess {
     return $null
 }
 
-# Detect an already-running opencode serve: an opencode.exe launched with
-# "serve" that owns a listening port. TUI instances are skipped. When several
-# serves are running, prefer the most recently started one (deterministic).
-function Find-ExistingServePort {
-    param([string]$Directory)
-
-    $targetDirectory = [IO.Path]::GetFullPath($Directory).TrimEnd('\', '/')
-    $procs = Get-Process -Name opencode -ErrorAction SilentlyContinue |
-        Sort-Object StartTime -Descending
-    foreach ($proc in $procs) {
-        if (-not (Test-IsServeProcess -ProcessId $proc.Id)) { continue }
-        $p = Get-ListenPortForPid -ProcessId $proc.Id
-        if (-not $p) { continue }
-        try {
-            $serverPath = Invoke-RestMethod -Uri "http://127.0.0.1:$p/path" -TimeoutSec 2
-            $serverDirectory = [IO.Path]::GetFullPath([string]$serverPath.directory).TrimEnd('\', '/')
-            if ($serverDirectory.Equals($targetDirectory, [StringComparison]::OrdinalIgnoreCase)) {
-                return $p
-            }
-        } catch {
-            continue
-        }
-    }
-    return $null
+function Get-ExistingTelegramProcess {
+    $escapedCliPath = [Regex]::Escape($TelegramExe)
+    return Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match $escapedCliPath -and $_.CommandLine -match '\bstart\b' } |
+        Select-Object -First 1
 }
 
-# Track a serve that WE start, so we can clean it up on exit. Stays $null when
-# we reuse an existing serve (which we must not kill).
-$script:StartedServe = $null
+# Track the dedicated serve so we can clean it up on exit.
+$startedServe = $null
 
-# Track the opencode-telegram process that WE start, so we can clean it up on exit.
-$script:StartedTelegram = $null
-
-# Track the TUI window that WE start, so we can close it on exit.
-$script:StartedTui = $null
+$processEnvironment = [Environment]::GetEnvironmentVariables('Process')
+$hadOpencodeApiUrl = $processEnvironment.Contains('OPENCODE_API_URL')
+$previousOpencodeApiUrl = [Environment]::GetEnvironmentVariable('OPENCODE_API_URL', 'Process')
 
 try {
+    if (-not (Test-Path -LiteralPath $OpencodeExe -PathType Leaf)) {
+        Write-Host "[!!] opencode.exe not found at:" -ForegroundColor Red
+        Write-Host "   $OpencodeExe" -ForegroundColor Cyan
+        exit 1
+    }
+    if (-not (Test-Path -LiteralPath $TelegramExe -PathType Leaf)) {
+        Write-Host "[!!] opencode-telegram not found at:" -ForegroundColor Red
+        Write-Host "   $TelegramExe" -ForegroundColor Cyan
+        Write-Host "   Install it with: npm install -g @grinev/opencode-telegram-bot" -ForegroundColor Cyan
+        exit 1
+    }
+    $existingTelegram = Get-ExistingTelegramProcess
+    if ($existingTelegram) {
+        Write-Host "[!!] opencode-telegram is already running (PID $($existingTelegram.ProcessId))." -ForegroundColor Red
+        Write-Host "   Stop the existing bot before starting another instance." -ForegroundColor Cyan
+        exit 1
+    }
     if ($WorkingDir -and -not (Test-Path -LiteralPath $WorkingDir -PathType Container)) {
         Write-Host "[!!] Working directory does not exist: $WorkingDir" -ForegroundColor Red
         exit 1
@@ -121,72 +110,50 @@ try {
         exit 2
     }
 
-    # Reuse a serve only when its API reports the same project directory.
-    # Sessions are globally persisted, so process age or port alone is unsafe.
-    $port = Find-ExistingServePort -Directory $effectiveCwd
     if ($WorkingDir) {
         Write-Host "[i] Using custom working directory: $effectiveCwd" -ForegroundColor Cyan
     }
 
-    if ($port) {
-        Write-Host "[OK] Reusing existing opencode serve on port $port" -ForegroundColor Green
-    } else {
-        $requestedPort = Get-FreeTcpPort
-        Write-Host "[..] Starting opencode serve on free port $requestedPort..." -ForegroundColor Yellow
-        $serveArgs = @{
-            FilePath = $OpencodeExe
-            ArgumentList = "serve --port $requestedPort"
-            WindowStyle = "Hidden"
-            PassThru = $true
-        }
-        if ($WorkingDir) {
-            $serveArgs.WorkingDirectory = $effectiveCwd
-        }
-        $script:StartedServe = Start-Process @serveArgs
+    $requestedPort = Get-FreeTcpPort
+    Write-Host "[..] Starting dedicated opencode serve on free port $requestedPort..." -ForegroundColor Yellow
+    $startedServe = Start-Process -FilePath $OpencodeExe `
+        -ArgumentList "serve --port $requestedPort" `
+        -WindowStyle Hidden -PassThru `
+        -WorkingDirectory $effectiveCwd
 
-        # Poll for up to ~15s until the server binds a port, bailing out early
-        # if the process crashes.
-        for ($i = 0; $i -lt 15; $i++) {
-            Start-Sleep -Seconds 1
-            if ($script:StartedServe.HasExited) {
-                Write-Host "[!!] opencode serve exited unexpectedly (code $($script:StartedServe.ExitCode))." -ForegroundColor Red
-                $script:StartedServe = $null
-                break
-            }
-            $port = Get-ListenPortForPid -ProcessId $script:StartedServe.Id
-            if ($port) { break }
+    # Poll for up to ~15s until the server binds a port, bailing out early
+    # if the process crashes.
+    $port = $null
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 1
+        if ($startedServe.HasExited) {
+            Write-Host "[!!] opencode serve exited unexpectedly (code $($startedServe.ExitCode))." -ForegroundColor Red
+            $startedServe = $null
+            break
         }
-
-        if ($port) {
-            Write-Host "[OK] opencode serve started on port $port (PID $($script:StartedServe.Id))" -ForegroundColor Green
-        } else {
-            Write-Host "[!!] Failed to start opencode serve. Start it manually:" -ForegroundColor Red
-            Write-Host "   $OpencodeExe serve" -ForegroundColor Cyan
-            exit 1
-        }
+        $port = Get-ListenPortForPid -ProcessId $startedServe.Id
+        if ($port) { break }
     }
 
-    # Verify opencode-telegram is installed.
-    $TelegramExe = Join-Path $env:APPDATA "npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js"
-    if (-not (Test-Path $TelegramExe)) {
-        Write-Host "[!!] opencode-telegram not found at:" -ForegroundColor Red
-        Write-Host "   $TelegramExe" -ForegroundColor Cyan
-        Write-Host "   Install it with: npm install -g @grinev/opencode-telegram-bot" -ForegroundColor Cyan
+    if ($port) {
+        Write-Host "[OK] Dedicated opencode serve started on port $port (PID $($startedServe.Id))" -ForegroundColor Green
+    } else {
+        Write-Host "[!!] Failed to start opencode serve." -ForegroundColor Red
         exit 1
     }
 
-    # opencode-telegram reads its config from ~/.config/opencode-telegram-bot/.env.
+    # opencode-telegram reads its config from %APPDATA%\opencode-telegram-bot\.env.
     # We override OPENCODE_API_URL to point at the serve we just resolved.
     # This ensures the bot talks to the correct project-scoped serve.
     $serverUrl = "http://127.0.0.1:$port"
-    $env:OPENCODE_API_URL = $serverUrl
+    [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $serverUrl, 'Process')
 
     # opencode-telegram stores its config and data under:
     #   %APPDATA%\opencode-telegram-bot\  (on Windows)
     # Unlike opencode-lark, it does NOT hash by cwd — it uses a single config
     # directory. The OPENCODE_API_URL override above is what ties it to the
     # correct project. This is fine for the "one project per bot" model.
-    $TelegramConfigDir = Join-Path $env:APPDATA "opencode-telegram-bot"
+    $TelegramConfigDir = Join-Path $appData "opencode-telegram-bot"
     if (-not (Test-Path $TelegramConfigDir)) {
         New-Item -ItemType Directory -Path $TelegramConfigDir -Force | Out-Null
     }
@@ -215,18 +182,15 @@ try {
         exit 1
     }
 
-    # Check Telegram API connectivity before starting the bot.
-    Write-Host "[..] Checking Telegram API connectivity..." -ForegroundColor Yellow
-    try {
-        $tgTest = Invoke-WebRequest -Uri "https://api.telegram.org" -TimeoutSec 10 -UseBasicParsing
-        if ($tgTest.StatusCode -eq 200) {
-            Write-Host "[OK] Telegram API reachable" -ForegroundColor Green
-        }
-    } catch {
-        Write-Host "[!!] Cannot reach Telegram API: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "   Configure a proxy in $envFile:" -ForegroundColor Cyan
-        Write-Host "   TELEGRAM_PROXY_URL=socks5://127.0.0.1:7890" -ForegroundColor Cyan
-        exit 1
+    $hasTelegramProxy = $envContent -match '(?m)^\s*TELEGRAM_PROXY_URL=\S+'
+    $hasTelegramApiRoot = $envContent -match '(?m)^\s*TELEGRAM_API_ROOT=\S+'
+
+    # Show the Telegram network mode before starting the bot. The bot itself
+    # performs API connectivity through Node.js and honors its proxy settings.
+    if ($hasTelegramProxy -or $hasTelegramApiRoot) {
+        Write-Host "[i] Telegram proxy/reverse-proxy configured." -ForegroundColor Cyan
+    } else {
+        Write-Host "[i] No Telegram proxy configured; bot will use direct API access." -ForegroundColor Cyan
     }
 
     # Start opencode-telegram in foreground (blocking).
@@ -243,49 +207,38 @@ try {
         exit 1
     }
 
-    $telegramProc = Start-Process -FilePath $nodeExe `
-        -ArgumentList "`"$TelegramExe`"" `
-        -WindowStyle Normal -PassThru `
-        -WorkingDirectory $TelegramConfigDir
-
-    $script:StartedTelegram = $telegramProc
-    Write-Host "[OK] opencode-telegram started (PID $($telegramProc.Id))" -ForegroundColor Green
     Write-Host ""
     Write-Host "Bot is running. Send a message on Telegram to start chatting." -ForegroundColor Cyan
     Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
 
-    # Wait for the bot process to exit.
-    $telegramProc.WaitForExit()
+    # Run in the current console so Ctrl+C reaches the bot. Once it exits,
+    # PowerShell continues into finally and cleans up the dedicated serve.
+    Push-Location $TelegramConfigDir
+    try {
+        & $nodeExe $TelegramExe start
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[!!] opencode-telegram exited with code $LASTEXITCODE." -ForegroundColor Red
+        }
+    } finally {
+        Pop-Location
+    }
 
 } finally {
-    # Cleanup: stop processes that THIS script started.
-    # Reused processes (existing serve) are left untouched.
+    # Stop processes that this script started.
 
-    if ($script:StartedTelegram) {
-        Write-Host "[..] Stopping opencode-telegram (PID $($script:StartedTelegram.Id))..." -ForegroundColor Yellow
+    if ($startedServe) {
+        Write-Host "[..] Stopping opencode serve (PID $($startedServe.Id))..." -ForegroundColor Yellow
         try {
-            Stop-Process -Id $script:StartedTelegram.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $startedServe.Id -Force -ErrorAction SilentlyContinue
         } catch {
             # Process may have already exited.
         }
     }
 
-    if ($script:StartedServe) {
-        Write-Host "[..] Stopping opencode serve (PID $($script:StartedServe.Id))..." -ForegroundColor Yellow
-        try {
-            Stop-Process -Id $script:StartedServe.Id -Force -ErrorAction SilentlyContinue
-        } catch {
-            # Process may have already exited.
-        }
-    }
-
-    if ($script:StartedTui) {
-        Write-Host "[..] Closing TUI window..." -ForegroundColor Yellow
-        try {
-            Stop-Process -Id $script:StartedTui.Id -Force -ErrorAction SilentlyContinue
-        } catch {
-            # Process may have already exited.
-        }
+    if ($hadOpencodeApiUrl) {
+        [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $previousOpencodeApiUrl, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $null, 'Process')
     }
 
     Write-Host "[OK] Cleanup complete." -ForegroundColor Green

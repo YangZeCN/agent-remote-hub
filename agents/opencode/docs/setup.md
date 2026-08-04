@@ -12,7 +12,7 @@
 
 ### 1. 安装 Node.js
 
-从 [Node.js 官网](https://nodejs.org/) 下载 LTS 版本安装（建议 >= 20）。安装后验证：
+从 [Node.js 官网](https://nodejs.org/) 下载 LTS 版本安装。飞书通道要求 Node.js 20+；当前 Telegram Bot 要求 Node.js 22+。如果需要同时使用两个通道，安装 Node.js 22 或更高版本。安装后验证：
 
 ```powershell
 node -v
@@ -114,6 +114,8 @@ Get-Item "$env:USERPROFILE\.bun\bin\opencode-lark.exe"
 ```
 
 ### Telegram
+
+> 当前 `@grinev/opencode-telegram-bot` 要求 Node.js 22 或更高版本。
 
 #### 安装 opencode-telegram-bot
 
