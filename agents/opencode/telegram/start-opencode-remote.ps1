@@ -309,12 +309,10 @@ try {
                 $currentSessionId = $sessionId
                 Write-Host "[OK] Found Telegram bot session: $sessionId" -ForegroundColor Green
                 
-                # Stop old TUI if exists
+                # Stop old TUI if exists (kill entire process tree)
                 if ($startedTui -and -not $startedTui.HasExited) {
                     Write-Host "[..] Stopping old TUI (session changed)..." -ForegroundColor Yellow
-                    try {
-                        Stop-Process -Id $startedTui.Id -Force -ErrorAction SilentlyContinue
-                    } catch {}
+                    taskkill /PID $startedTui.Id /T /F 2>$null | Out-Null
                 }
                 
                 # Start new TUI attached to this session
