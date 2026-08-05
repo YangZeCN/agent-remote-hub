@@ -1,4 +1,4 @@
-# OpenCode + Telegram 通道
+﻿# OpenCode + Telegram 通道
 
 通过 Telegram 远程操控 OpenCode AI 助手，实现手机端随时随地的代码协作。
 
@@ -34,15 +34,7 @@
 - **opencode serve**: OpenCode 的 HTTP 服务端，提供 AI 对话能力
 - **opencode TUI**: 本地终端界面，可与 Telegram 共享同一会话上下文
 
-### 技术特点
 
-- **运行时**: Node.js（与飞书通道的 Bun 不同，两者可并行）
-- **入站端口**: 不需要（长轮询模式）
-- **消息接收**: 长轮询模式，当前无已确认的延迟重放问题
-- **移动端命令**: 原生命令 + inline button
-- **项目切换**: 原生支持
-- **OpenCode 生命周期**: Bot 内置 start/stop/monitor
-- **网络要求**: 需要访问 Telegram Bot API（国内可能需要代理）
 
 ### 会话持久化
 
@@ -70,6 +62,8 @@
 
 **TUI 会自动跟随 session 切换**：当你在 Telegram 中切换到其他 session 时，本地 TUI 会自动重启并 attach 到新的 session，始终保持同步。
 
+**TUI 窗口自动关闭**：脚本会在 Windows Terminal 的 `settings.json` 中幂等地添加一个隐藏 profile（`opencode-remote-tui`，`closeOnExit=always`），确保切换 session 或 Ctrl+C 退出时，旧的 TUI 窗口自动关闭，不会残留。该 profile 只影响本脚本启动的 TUI，不影响你其他终端窗口。
+
 如果只想运行 Telegram bot（不拉起本地 TUI），可使用：
 
 ```powershell
@@ -77,16 +71,17 @@
 ```
 
 脚本会自动：
-1. 检查 OpenCode、Telegram Bot 配置和本机重复 Bot 进程
-2. 启动 Telegram 专用的 `opencode serve`（随机端口，不复用飞书 serve）
-3. 自动发现 serve 监听的端口
-4. 验证 Telegram Bot 配置（Token、User ID）
-5. 显示 Telegram 网络模式（直连、代理或反向代理）
-6. 启动 opencode-telegram 并连接到该端口
-7. 等待 bot 创建/恢复 session，然后启动 TUI 并 attach 到该 session
-8. 监控 session 切换，自动重启 TUI 跟随新 session
-9. **保持运行**，脚本窗口会一直阻塞，直到你按 Ctrl+C 或 bot 退出
-10. 退出时（Ctrl+C）自动清理本脚本启动的 serve、bot 和 TUI 进程
+1. 检查 OpenCode、Telegram Bot 配置
+2. **自动清理**本机残留的 opencode-telegram 进程（若检测到已有实例，会先停止再继续启动）
+3. 启动 Telegram 专用的 `opencode serve`（随机端口，不复用飞书 serve）
+4. 自动发现 serve 监听的端口
+5. 验证 Telegram Bot 配置（Token、User ID）
+6. 显示 Telegram 网络模式（直连、代理或反向代理）
+7. 启动 opencode-telegram 并连接到该端口
+8. 等待 bot 创建/恢复 session，然后启动 TUI 并 attach 到该 session
+9. 监控 session 切换，自动重启 TUI 跟随新 session
+10. **保持运行**，脚本窗口会一直阻塞，直到你按 Ctrl+C 或 bot 退出
+11. 退出时（Ctrl+C）自动清理本脚本启动的 serve、bot 和 TUI 进程
 
 #### 指定项目目录
 
@@ -143,71 +138,6 @@ OPENCODE_MODEL_ID=qwen3.7-plus
 
 > **注意**：Telegram bot 的模型配置独立于本地 OpenCode TUI。如果 bot 返回空消息或无响应，请检查 `.env` 中的模型配置是否正确，并确保该模型在 OpenCode 中可用。
 
-### 网络配置
-
-#### 方案 A：本机正向代理（推荐）
-
-如果电脑已有 Clash、Mihomo 或企业代理：
-
-```env
-# 编辑 %APPDATA%\opencode-telegram-bot\.env
-TELEGRAM_PROXY_URL=socks5://127.0.0.1:7890
-```
-
-支持 SOCKS5、SOCKS4、HTTP、HTTPS 代理。
-
-#### 方案 B：自建 HTTPS 反向代理
-
-```env
-TELEGRAM_API_ROOT=https://tg-proxy.example.com
-TELEGRAM_PROXY_SECRET=使用足够长的随机值
-```
-
-反向代理必须部署在能够访问 `api.telegram.org` 的网络中。
-
-#### 方案 C：仅强制 IPv4
-
-```env
-TELEGRAM_FORCE_IPV4=true
-```
-
-只处理 IPv6 路由异常，不能绕过网络封锁。
-
-> `TELEGRAM_PROXY_URL` 与 `TELEGRAM_API_ROOT` 是互斥模式，不能同时配置。
-
-## 主要功能
-
-### 项目管理
-
-- `/projects` — 浏览和切换项目
-- 自动检测本地 OpenCode 项目目录
-
-### 会话管理
-
-- `/sessions` — 查看和管理 session
-- `/messages` — 查看当前 session 的消息历史
-- 在 Telegram 内继续本地 TUI 的 session
-
-### 权限审批
-
-- Agent 请求权限时，Telegram 会弹出确认按钮
-- 支持批准/拒绝操作
-
-### 模型控制
-
-- 切换模型提供商和模型 ID
-- 配置 Agent、variant 和 context
-
-### 定时任务
-
-- 创建和管理定时任务
-- 后台 session 通知
-
-### 文件处理
-
-- 发送图片、文件给 Agent
-- 接收 Agent 生成的 diff 和文件
-
 ## 常见问题
 
 ### Q: 为什么用随机端口而不是固定端口？
@@ -231,23 +161,11 @@ TELEGRAM_FORCE_IPV4=true
 
 **A**: 这表示同一个 Bot Token 正在被另一个长轮询实例使用。它不是 OpenCode 端口冲突、SQLite 问题，也不是 `opencode serve` 启动失败。
 
-先在本机检查：
+**脚本会自动处理**：启动脚本会检测本机是否已有 opencode-telegram 进程在运行，若有则自动停止旧实例后再启动新实例。如果自动清理失败，才会提示你手动处理。
 
-```powershell
-opencode-telegram status
-
-Get-CimInstance Win32_Process |
-       Where-Object { $_.CommandLine -match 'opencode-telegram-bot|opencode-telegram' } |
-       Select-Object ProcessId,Name,CommandLine
-```
-
-如果本机没有残留实例，通常是另一台电脑、远程主机、daemon/service 或旧终端仍在使用同一个 Token。停止旧实例后再启动；如果找不到旧实例，去 @BotFather 撤销并重新生成 Bot Token，然后运行 `opencode-telegram config` 更新配置。
+如果自动清理后仍出现冲突，通常是另一台电脑、远程主机、daemon/service 或旧终端仍在使用同一个 Token。停止旧实例后再启动；如果找不到旧实例，去 @BotFather 撤销并重新生成 Bot Token，然后运行 `opencode-telegram config` 更新配置。
 
 并行使用多台电脑时，建议每台电脑创建独立 Telegram Bot Token。
-
-### Q: Telegram Bot 会创建 SQLite 吗？
-
-**A**: 当前版本未观察到 Telegram Bot 自身创建 SQLite。Bot 配置和缓存保存在 `%APPDATA%\opencode-telegram-bot\.env`、`settings.json`、日志文件中；OpenCode 的对话历史则由 `opencode serve` 写入 `~/.local/share/opencode/opencode.db`。
 
 ### Q: 一个从没在 OpenCode 打开过的新项目，怎么让它出现在 `/projects`？
 
@@ -277,37 +195,9 @@ node "$env:APPDATA\npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js" s
 
 说明：`/projects` 列表来自 OpenCode API 项目列表与会话目录缓存合并结果。仅在文件系统里存在目录，不一定会立即出现在列表中；先以该目录启动一次 `serve` 最稳定。
 
-### Q: 脚本启动后，serve 进程还在后台，正常吗？
-
-**A**: 正常。脚本会记录自己启动的 serve 进程，在脚本退出时（包括 Ctrl+C）自动清理。
-
 ### Q: 重启电脑后，之前的对话还在吗？
 
-**A**: 在。对话历史持久化在磁盘（`~/.local/share/opencode/opencode.db`），不依赖 serv
-e 进程。
-
-### Q: Bot 离线期间的消息会丢失吗？
-
-**A**: Telegram Bot API 会保留离线期间的消息（通常 24 小时内）。Bot 重新上线后会收到积压的消息。但长时间离线可能导致消息过期。
-
-### Q: 如何查看 Bot 日志？
-
-**A**: 当前版本日志输出到标准输出。如需持久化日志，可以：
-
-```powershell
-# 手动启动并记录日志
-node "$env:APPDATA\npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js" start 2>&1 | Tee-Object -FilePath "$env:TEMP\opencode-telegram.log"
-```
-
-### Q: 如何更新 Bot 版本？
-
-```powershell
-npm install -g @grinev/opencode-telegram-bot@latest
-```
-
-### Q: 消息太长被截断？
-
-**A**: Telegram 单条消息限制 4096 字节。Bot 会自动拆分长消息，但代码块和 Markdown 格式可能受影响。
+**A**: 在。对话历史持久化在磁盘（`~/.local/share/opencode/opencode.db`），不依赖 serve 进程。
 
 ## 多通道并行
 

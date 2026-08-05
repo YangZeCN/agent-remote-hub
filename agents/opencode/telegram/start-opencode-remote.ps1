@@ -28,6 +28,14 @@ $appData = [Environment]::GetEnvironmentVariable('APPDATA', 'Process')
 $OpencodeExe = Join-Path $appData "npm\node_modules\opencode-ai\bin\opencode.exe"
 $TelegramExe = Join-Path $appData "npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js"
 
+# Dedicated Windows Terminal profile used to host the OpenCode TUI. It sets
+# closeOnExit=always so the tab/window closes automatically when we kill the
+# opencode process (a forced kill exits with code 1, which the default
+# "graceful" behavior would otherwise keep open). The GUID is fixed so the
+# profile is added at most once (idempotent).
+$WtTuiProfileName = 'opencode-remote-tui'
+$WtTuiProfileGuid = '{2b8f9d7a-6c41-4e2b-9a3d-7f0e1c5a4b6d}'
+
 # Find the listening TCP port owned by a given process id (opencode serve).
 function Get-ListenPortForPid {
     param([int]$ProcessId)
@@ -70,8 +78,35 @@ function Get-AncestorServeProcess {
 function Get-ExistingTelegramProcess {
     $escapedCliPath = [Regex]::Escape($TelegramExe)
     return Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match $escapedCliPath -and $_.CommandLine -match '\bstart\b' } |
-        Select-Object -First 1
+        Where-Object { $_.CommandLine -match $escapedCliPath -and $_.CommandLine -match '\bstart\b' }
+}
+
+function Stop-ExistingTelegramProcesses {
+    $existing = @(Get-ExistingTelegramProcess)
+    if ($existing.Count -eq 0) { return $true }
+
+    $pids = ($existing | ForEach-Object { $_.ProcessId }) -join ', '
+    Write-Host "[..] Found existing opencode-telegram process(es): $pids" -ForegroundColor Yellow
+    Write-Host "[..] Stopping existing opencode-telegram process tree(s)..." -ForegroundColor Yellow
+
+    foreach ($proc in $existing) {
+        try {
+            taskkill /PID $proc.ProcessId /T /F 2>$null | Out-Null
+        } catch {
+            # Ignore and verify after attempting all pids.
+        }
+    }
+
+    Start-Sleep -Milliseconds 600
+    $remaining = @(Get-ExistingTelegramProcess)
+    if ($remaining.Count -gt 0) {
+        $leftPids = ($remaining | ForEach-Object { $_.ProcessId }) -join ', '
+        Write-Host "[!!] Failed to stop existing opencode-telegram process(es): $leftPids" -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host "[OK] Existing opencode-telegram process(es) stopped." -ForegroundColor Green
+    return $true
 }
 
 function Write-TelegramConflictHint {
@@ -114,11 +149,152 @@ function Get-TelegramSessionId {
     return $sessionId
 }
 
-# Track the dedicated serve so we can clean it up on exit.
-$startedServe = $null
+function Stop-TuiProcesses {
+    param(
+        [string]$ServerUrl,
+        [System.Collections.Generic.List[int]]$Pids
+    )
 
-# Track a TUI window started by this script so we can close it on exit.
-$startedTui = $null
+    # 1) Deterministic: kill every TUI PID this script started, tree included.
+    #    This does not depend on WMI command-line matching being up to date,
+    #    which is the reliable way to close the old TUI on session switch and
+    #    on Ctrl+C.
+    if ($Pids -and $Pids.Count -gt 0) {
+        foreach ($tuiPid in @($Pids)) {
+            taskkill /PID $tuiPid /T /F 2>$null | Out-Null
+        }
+        $Pids.Clear()
+    }
+
+    # 2) Backstop: sweep any stray "opencode attach" against our serve URL that
+    #    we may not have tracked (e.g. a TUI that was reparented).
+    if ($ServerUrl) {
+        $escapedUrl = [Regex]::Escape($ServerUrl)
+        $attachProcs = Get-CimInstance Win32_Process -Filter "Name='opencode.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { [string]$_.CommandLine -match '\battach\b' -and [string]$_.CommandLine -match $escapedUrl }
+        foreach ($p in $attachProcs) {
+            taskkill /PID $p.ProcessId /T /F 2>$null | Out-Null
+        }
+    }
+
+    Start-Sleep -Milliseconds 400
+}
+
+# Ensure a dedicated Windows Terminal profile (closeOnExit=always) exists so the
+# TUI window closes when we kill the opencode process. Idempotent: if a profile
+# with our fixed GUID already exists, nothing is changed. Returns $true when the
+# profile is available for launching, $false to fall back to a direct launch.
+function Initialize-OpenCodeTuiProfile {
+    param(
+        [string]$ProfileName,
+        [string]$ProfileGuid
+    )
+
+    if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) { return $false }
+
+    $settingsPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
+    if (-not (Test-Path -LiteralPath $settingsPath)) {
+        $settingsPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\settings.json'
+    }
+    if (-not (Test-Path -LiteralPath $settingsPath)) { return $false }
+
+    try {
+        $raw = Get-Content -LiteralPath $settingsPath -Raw -ErrorAction Stop
+        $json = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        # settings.json uses JSONC (comments/trailing commas) that PowerShell
+        # cannot parse safely. Do not risk corrupting it; fall back instead.
+        Write-Host "[i] Could not parse Windows Terminal settings.json; TUI windows will not auto-close." -ForegroundColor DarkGray
+        return $false
+    }
+
+    if (-not $json.profiles) { return $false }
+    $list = $json.profiles.list
+    if ($null -eq $list) { return $false }
+
+    if ($list | Where-Object { $_.guid -eq $ProfileGuid }) {
+        return $true  # Already present; nothing to do.
+    }
+
+    $newProfile = [pscustomobject][ordered]@{
+        guid                     = $ProfileGuid
+        name                     = $ProfileName
+        hidden                   = $true
+        closeOnExit              = 'always'
+        suppressApplicationTitle = $true
+    }
+    $json.profiles.list = @($list) + $newProfile
+
+    try {
+        Copy-Item -LiteralPath $settingsPath -Destination "$settingsPath.bak" -Force -ErrorAction SilentlyContinue
+        ($json | ConvertTo-Json -Depth 32) | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+        Write-Host "[OK] Added Windows Terminal profile '$ProfileName' (closeOnExit=always)." -ForegroundColor Green
+        Write-Host "[i] A backup was saved to settings.json.bak (file formatting may change)." -ForegroundColor DarkGray
+        return $true
+    } catch {
+        Write-Host "[i] Failed to update Windows Terminal settings.json; TUI windows will not auto-close." -ForegroundColor DarkGray
+        return $false
+    }
+}
+
+# Start an OpenCode TUI attached to a session. When $UseWt is set, the TUI is
+# launched in a dedicated Windows Terminal window using our closeOnExit=always
+# profile (so the window auto-closes when the process is killed). Otherwise it
+# is launched directly. Returns the opencode.exe PID (for deterministic
+# cleanup) or $null.
+function Start-OpenCodeTui {
+    param(
+        [string]$ServerUrl,
+        [string]$SessionId,
+        [string]$Dir,
+        [bool]$UseWt,
+        [string]$OpencodeExe,
+        [string]$ProfileName
+    )
+
+    if ($UseWt) {
+        Start-Process -FilePath 'wt.exe' -ArgumentList @(
+            '-w', 'new',
+            '-p', $ProfileName,
+            $OpencodeExe, 'attach', $ServerUrl, '--session', $SessionId, '--dir', $Dir
+        ) | Out-Null
+
+        # wt.exe is only a launcher; poll for the real opencode attach process
+        # so we can track and kill it deterministically later.
+        $escapedUrl = [Regex]::Escape($ServerUrl)
+        $escapedSession = [Regex]::Escape($SessionId)
+        for ($i = 0; $i -lt 12; $i++) {
+            Start-Sleep -Milliseconds 400
+            $p = Get-CimInstance Win32_Process -Filter "Name='opencode.exe'" -ErrorAction SilentlyContinue |
+                Where-Object {
+                    [string]$_.CommandLine -match '\battach\b' -and
+                    [string]$_.CommandLine -match $escapedUrl -and
+                    [string]$_.CommandLine -match $escapedSession
+                } | Select-Object -First 1
+            if ($p) { return [int]$p.ProcessId }
+        }
+        return $null
+    }
+
+    $proc = Start-Process -FilePath $OpencodeExe `
+        -ArgumentList @('attach', $ServerUrl, '--session', $SessionId, '--dir', $Dir) `
+        -WorkingDirectory $Dir -WindowStyle Normal -PassThru
+    return [int]$proc.Id
+}
+
+# Track the bot process started by this script.
+$startedBot = $null
+
+# Track every TUI window started by this script so we can close all of them on
+# session switch and on exit. We track PIDs (not a single handle) so a stale
+# TUI from a previous session is always reaped.
+$startedTuiPids = New-Object System.Collections.Generic.List[int]
+
+# Whether to host the TUI in a dedicated Windows Terminal profile that
+# auto-closes its window when the process is killed.
+$useWtForTui = $false
+
+$serverUrl = $null
 
 $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
 $hadOpencodeApiUrl = $processEnvironment.Contains('OPENCODE_API_URL')
@@ -138,10 +314,8 @@ try {
         Write-Host "   Install it with: npm install -g @grinev/opencode-telegram-bot" -ForegroundColor Cyan
         exit 1
     }
-    $existingTelegram = Get-ExistingTelegramProcess
-    if ($existingTelegram) {
-        Write-Host "[!!] opencode-telegram is already running (PID $($existingTelegram.ProcessId))." -ForegroundColor Red
-        Write-Host "   Stop the existing bot before starting another instance." -ForegroundColor Cyan
+    if (-not (Stop-ExistingTelegramProcesses)) {
+        Write-Host "   Stop the existing bot manually, then retry." -ForegroundColor Cyan
         exit 1
     }
     if ($WorkingDir -and -not (Test-Path -LiteralPath $WorkingDir -PathType Container)) {
@@ -267,6 +441,7 @@ try {
             -WorkingDirectory $TelegramConfigDir `
             -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $botLogOut -RedirectStandardError $botLogErr
+        $startedBot = $botProc
     } finally {
         Pop-Location
     }
@@ -290,6 +465,15 @@ try {
     Write-Host "[OK] opencode-telegram started (PID $($botProc.Id))" -ForegroundColor Green
 
     if ($shouldStartTui) {
+        # Prepare a dedicated Windows Terminal profile so TUI windows auto-close
+        # when we kill the opencode process on session switch / exit.
+        $useWtForTui = Initialize-OpenCodeTuiProfile -ProfileName $WtTuiProfileName -ProfileGuid $WtTuiProfileGuid
+        if ($useWtForTui) {
+            Write-Host "[i] TUI windows will auto-close via Windows Terminal profile '$WtTuiProfileName'." -ForegroundColor DarkGray
+        } else {
+            Write-Host "[i] Auto-close profile unavailable; a killed TUI tab may need manual closing." -ForegroundColor DarkGray
+        }
+
         # Wait for bot to create/restore session, then start TUI attached to it
         Write-Host ""
         Write-Host "[..] Waiting for Telegram bot session..." -ForegroundColor Yellow
@@ -309,19 +493,22 @@ try {
                 $currentSessionId = $sessionId
                 Write-Host "[OK] Found Telegram bot session: $sessionId" -ForegroundColor Green
                 
-                # Stop old TUI if exists (kill entire process tree)
-                if ($startedTui -and -not $startedTui.HasExited) {
-                    Write-Host "[..] Stopping old TUI (session changed)..." -ForegroundColor Yellow
-                    taskkill /PID $startedTui.Id /T /F 2>$null | Out-Null
-                }
+                # Close the previous TUI(s) before opening the new one. We kill
+                # the tracked PID tree first (deterministic), then sweep by URL.
+                Write-Host "[..] Stopping old TUI window(s)..." -ForegroundColor Yellow
+                Stop-TuiProcesses -ServerUrl $serverUrl -Pids $startedTuiPids
                 
                 # Start new TUI attached to this session
                 Write-Host "[..] Starting TUI attached to session $sessionId..." -ForegroundColor Green
                 try {
-                    $startedTui = Start-Process -FilePath $OpencodeExe `
-                        -ArgumentList @('attach', $serverUrl, '--session', $sessionId, '--dir', $effectiveCwd) `
-                        -WorkingDirectory $effectiveCwd -WindowStyle Normal -PassThru
-                    Write-Host "[OK] OpenCode TUI started (PID $($startedTui.Id))" -ForegroundColor Green
+                    $tuiPid = Start-OpenCodeTui -ServerUrl $serverUrl -SessionId $sessionId -Dir $effectiveCwd `
+                        -UseWt $useWtForTui -OpencodeExe $OpencodeExe -ProfileName $WtTuiProfileName
+                    if ($tuiPid) {
+                        $startedTuiPids.Add($tuiPid)
+                        Write-Host "[OK] OpenCode TUI started (PID $tuiPid)" -ForegroundColor Green
+                    } else {
+                        Write-Host "[!!] Could not confirm the OpenCode TUI process (it may still have opened)." -ForegroundColor Red
+                    }
                 } catch {
                     Write-Host "[!!] Failed to start OpenCode TUI: $($_.Exception.Message)" -ForegroundColor Red
                 }
@@ -351,23 +538,27 @@ try {
 } finally {
     # Stop processes that this script started.
 
-    if ($startedServe) {
-        Write-Host "[..] Stopping opencode serve (PID $($startedServe.Id))..." -ForegroundColor Yellow
+    # Close TUI windows first so no stale attach console survives Ctrl+C.
+    Write-Host "[..] Closing OpenCode TUI window(s)..." -ForegroundColor Yellow
+    Stop-TuiProcesses -ServerUrl $serverUrl -Pids $startedTuiPids
+
+    if ($startedBot) {
+        Write-Host "[..] Stopping opencode-telegram (PID $($startedBot.Id))..." -ForegroundColor Yellow
         try {
-            Stop-Process -Id $startedServe.Id -Force -ErrorAction SilentlyContinue
-        } catch {
-            # Process may have already exited.
-        }
-    }
-    if ($startedTui) {
-        Write-Host "[..] Closing OpenCode TUI (PID $($startedTui.Id))..." -ForegroundColor Yellow
-        try {
-            Stop-Process -Id $startedTui.Id -Force -ErrorAction SilentlyContinue
+            taskkill /PID $startedBot.Id /T /F 2>$null | Out-Null
         } catch {
             # Process may have already exited.
         }
     }
 
+    if ($startedServe) {
+        Write-Host "[..] Stopping opencode serve (PID $($startedServe.Id))..." -ForegroundColor Yellow
+        try {
+            taskkill /PID $startedServe.Id /T /F 2>$null | Out-Null
+        } catch {
+            # Process may have already exited.
+        }
+    }
     if ($hadOpencodeApiUrl) {
         [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $previousOpencodeApiUrl, 'Process')
     } else {
