@@ -1,5 +1,5 @@
 # opencode-telegram one-click startup script
-# Usage: .\start-opencode-remote.ps1 [-WorkingDir <path>]
+# Usage: .\start-opencode-remote.ps1 [-WorkingDir <path>] [-NoTui]
 #
 # This script starts opencode serve on a RANDOM free port, auto-detects that
 # port, then launches opencode-telegram pointed at it. No fixed port required,
@@ -8,15 +8,20 @@
 # The script always starts a dedicated serve so Telegram stays isolated from
 # other channels, then stops that serve when the script exits.
 #
+# By default, this script also starts a local OpenCode TUI attached to the
+# same serve for desktop/mobile context switching. Use -NoTui to disable.
+#
 # By default, opencode serve inherits the current working directory (cwd) from
 # the PowerShell session that runs this script. Use -WorkingDir to specify a
 # custom project directory for the serve process.
 
 param(
-    [string]$WorkingDir  # Custom project directory for opencode serve
+    [string]$WorkingDir,  # Custom project directory for opencode serve
+    [switch]$NoTui        # Disable automatic OpenCode TUI startup
 )
 
 Write-Host "Starting opencode-telegram remote control..." -ForegroundColor Green
+$shouldStartTui = -not $NoTui
 
 # Resolve tool paths from environment variables for portability across users.
 $appData = [Environment]::GetEnvironmentVariable('APPDATA', 'Process')
@@ -69,12 +74,39 @@ function Get-ExistingTelegramProcess {
         Select-Object -First 1
 }
 
+function Write-TelegramConflictHint {
+    param([string]$ConfigDir)
+
+    $foundConflict = $false
+    $latestLog = Get-ChildItem -Path (Join-Path $ConfigDir 'logs') -Filter 'bot-*.log' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($latestLog) {
+        $recentLog = Get-Content -LiteralPath $latestLog.FullName -Tail 80 -ErrorAction SilentlyContinue
+        $foundConflict = $recentLog -match 'getUpdates.+409.+Conflict'
+    }
+
+    if ($foundConflict) {
+        Write-Host "[!!] Telegram getUpdates conflict detected." -ForegroundColor Red
+    } else {
+        Write-Host "[i] If the error above says 'getUpdates' and '409: Conflict':" -ForegroundColor Cyan
+    }
+    Write-Host "     Another running process is using the same Telegram Bot Token." -ForegroundColor Cyan
+    Write-Host "     Stop the old bot on every machine, or revoke/regenerate the token in @BotFather." -ForegroundColor Cyan
+    Write-Host "     This is not an OpenCode port, SQLite, or serve startup problem." -ForegroundColor Cyan
+}
+
 # Track the dedicated serve so we can clean it up on exit.
 $startedServe = $null
+
+# Track a TUI window started by this script so we can close it on exit.
+$startedTui = $null
 
 $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
 $hadOpencodeApiUrl = $processEnvironment.Contains('OPENCODE_API_URL')
 $previousOpencodeApiUrl = [Environment]::GetEnvironmentVariable('OPENCODE_API_URL', 'Process')
+$hadNodeUseSystemCa = $processEnvironment.Contains('NODE_USE_SYSTEM_CA')
+$previousNodeUseSystemCa = [Environment]::GetEnvironmentVariable('NODE_USE_SYSTEM_CA', 'Process')
 
 try {
     if (-not (Test-Path -LiteralPath $OpencodeExe -PathType Leaf)) {
@@ -148,6 +180,18 @@ try {
     $serverUrl = "http://127.0.0.1:$port"
     [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $serverUrl, 'Process')
 
+    if ($shouldStartTui) {
+        Write-Host "[..] Starting OpenCode TUI attached to $serverUrl ..." -ForegroundColor Green
+        try {
+            $startedTui = Start-Process -FilePath $OpencodeExe `
+                -ArgumentList @('attach', $serverUrl, '--dir', $effectiveCwd) `
+                -WorkingDirectory $effectiveCwd -WindowStyle Normal -PassThru
+            Write-Host "[OK] OpenCode TUI started (PID $($startedTui.Id))" -ForegroundColor Green
+        } catch {
+            Write-Host "[!!] Failed to start OpenCode TUI: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+
     # opencode-telegram stores its config and data under:
     #   %APPDATA%\opencode-telegram-bot\  (on Windows)
     # Unlike opencode-lark, it does NOT hash by cwd — it uses a single config
@@ -199,6 +243,9 @@ try {
     Write-Host "[..] Starting opencode-telegram -> $serverUrl" -ForegroundColor Green
     Write-Host "[i] Config dir: $TelegramConfigDir" -ForegroundColor DarkGray
     Write-Host "[i] Bot will use long polling (no inbound port required)" -ForegroundColor DarkGray
+    if ($NoTui) {
+        Write-Host "[i] TUI disabled for this run (-NoTui)." -ForegroundColor DarkGray
+    }
 
     # Use node to run the CLI directly, passing the OPENCODE_API_URL env var.
     $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
@@ -206,6 +253,7 @@ try {
         Write-Host "[!!] node not found in PATH" -ForegroundColor Red
         exit 1
     }
+    [Environment]::SetEnvironmentVariable('NODE_USE_SYSTEM_CA', '1', 'Process')
 
     Write-Host ""
     Write-Host "Bot is running. Send a message on Telegram to start chatting." -ForegroundColor Cyan
@@ -218,6 +266,7 @@ try {
         & $nodeExe $TelegramExe start
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[!!] opencode-telegram exited with code $LASTEXITCODE." -ForegroundColor Red
+            Write-TelegramConflictHint -ConfigDir $TelegramConfigDir
         }
     } finally {
         Pop-Location
@@ -234,11 +283,24 @@ try {
             # Process may have already exited.
         }
     }
+    if ($startedTui) {
+        Write-Host "[..] Closing OpenCode TUI (PID $($startedTui.Id))..." -ForegroundColor Yellow
+        try {
+            Stop-Process -Id $startedTui.Id -Force -ErrorAction SilentlyContinue
+        } catch {
+            # Process may have already exited.
+        }
+    }
 
     if ($hadOpencodeApiUrl) {
         [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $previousOpencodeApiUrl, 'Process')
     } else {
         [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $null, 'Process')
+    }
+    if ($hadNodeUseSystemCa) {
+        [Environment]::SetEnvironmentVariable('NODE_USE_SYSTEM_CA', $previousNodeUseSystemCa, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('NODE_USE_SYSTEM_CA', $null, 'Process')
     }
 
     Write-Host "[OK] Cleanup complete." -ForegroundColor Green

@@ -66,6 +66,14 @@
 .\start-opencode-remote.ps1
 ```
 
+默认行为会像飞书通道一样，同时打开一个本地 OpenCode TUI（附着到同一个 serve）。
+
+如果只想运行 Telegram bot（不拉起本地 TUI），可使用：
+
+```powershell
+.\start-opencode-remote.ps1 -NoTui
+```
+
 脚本会自动：
 1. 检查 OpenCode、Telegram Bot 配置和本机重复 Bot 进程
 2. 启动 Telegram 专用的 `opencode serve`（随机端口，不复用飞书 serve）
@@ -118,6 +126,18 @@ opencode-telegram config
 - **用户名 / 密码** — 直接回车跳过
 
 配置保存在 `%APPDATA%\opencode-telegram-bot\.env`（即 `C:\Users\<你的用户名>\AppData\Roaming\opencode-telegram-bot\.env`）。
+
+#### 第四步：配置模型（手动）
+
+`opencode-telegram config` 命令不会询问模型配置，需要手动编辑 `.env` 文件：
+
+```env
+# 编辑 %APPDATA%\opencode-telegram-bot\.env
+OPENCODE_MODEL_PROVIDER=new-api
+OPENCODE_MODEL_ID=qwen3.7-plus
+```
+
+> **注意**：Telegram bot 的模型配置独立于本地 OpenCode TUI。如果 bot 返回空消息或无响应，请检查 `.env` 中的模型配置是否正确，并确保该模型在 OpenCode 中可用。
 
 ### 网络配置
 
@@ -203,13 +223,64 @@ TELEGRAM_FORCE_IPV4=true
 2. 在新机器上运行 `opencode-telegram config`，填入同一个 Token 和 User ID
 3. 运行启动脚本，Bot 即接管消息接收
 
+### Q: 启动后出现 `409: Conflict: terminated by other getUpdates request` 怎么办？
+
+**A**: 这表示同一个 Bot Token 正在被另一个长轮询实例使用。它不是 OpenCode 端口冲突、SQLite 问题，也不是 `opencode serve` 启动失败。
+
+先在本机检查：
+
+```powershell
+opencode-telegram status
+
+Get-CimInstance Win32_Process |
+       Where-Object { $_.CommandLine -match 'opencode-telegram-bot|opencode-telegram' } |
+       Select-Object ProcessId,Name,CommandLine
+```
+
+如果本机没有残留实例，通常是另一台电脑、远程主机、daemon/service 或旧终端仍在使用同一个 Token。停止旧实例后再启动；如果找不到旧实例，去 @BotFather 撤销并重新生成 Bot Token，然后运行 `opencode-telegram config` 更新配置。
+
+并行使用多台电脑时，建议每台电脑创建独立 Telegram Bot Token。
+
+### Q: Telegram Bot 会创建 SQLite 吗？
+
+**A**: 当前版本未观察到 Telegram Bot 自身创建 SQLite。Bot 配置和缓存保存在 `%APPDATA%\opencode-telegram-bot\.env`、`settings.json`、日志文件中；OpenCode 的对话历史则由 `opencode serve` 写入 `~/.local/share/opencode/opencode.db`。
+
+### Q: 一个从没在 OpenCode 打开过的新项目，怎么让它出现在 `/projects`？
+
+**A**: 最稳妥的方法是先用该项目目录启动 Telegram 专用的 `opencode serve`，再在 Telegram 里切换项目。
+
+方式一（推荐，使用启动脚本）：
+
+```powershell
+.\start-opencode-remote.ps1 -WorkingDir "D:\Code\YourNewProject"
+```
+
+方式二（手动）：
+
+```powershell
+cd D:\Code\YourNewProject
+opencode serve --port 62489
+
+# 新开一个终端
+$env:OPENCODE_API_URL = "http://127.0.0.1:62489"
+$env:NODE_USE_SYSTEM_CA = "1"
+node "$env:APPDATA\npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js" start
+```
+
+然后在 Telegram 中执行：
+1. `/projects`（刷新并选择新项目）
+2. `/new`（创建新会话）或 `/sessions`（切换已有会话）
+
+说明：`/projects` 列表来自 OpenCode API 项目列表与会话目录缓存合并结果。仅在文件系统里存在目录，不一定会立即出现在列表中；先以该目录启动一次 `serve` 最稳定。
+
 ### Q: 脚本启动后，serve 进程还在后台，正常吗？
 
 **A**: 正常。脚本会记录自己启动的 serve 进程，在脚本退出时（包括 Ctrl+C）自动清理。
 
 ### Q: 重启电脑后，之前的对话还在吗？
 
-**A**: 在。对话历史持久化在磁盘（`~/.local/share/opencode/opencode.db`），不依赖 serve 进程。
+**A**: 在。对话历史持久化在磁盘（`~/.local/share/opencode/opencode.db`），不依赖 serv
+e 进程。
 
 ### Q: Bot 离线期间的消息会丢失吗？
 
