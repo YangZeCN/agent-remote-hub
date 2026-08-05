@@ -96,6 +96,24 @@ function Write-TelegramConflictHint {
     Write-Host "     This is not an OpenCode port, SQLite, or serve startup problem." -ForegroundColor Cyan
 }
 
+# Read the current session ID from Telegram bot log
+function Get-TelegramSessionId {
+    param(
+        [string]$LogPath
+    )
+    if (-not (Test-Path -LiteralPath $LogPath)) { return $null }
+
+    $sessionId = $null
+    $lines = @(Get-Content -LiteralPath $LogPath -Tail 200 -ErrorAction SilentlyContinue)
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        if ($lines[$i] -match '\[Attach\] (?:Attached to session|Restored followed session on startup): session=(ses_[A-Za-z0-9]+)') {
+            $sessionId = $Matches[1]
+            break
+        }
+    }
+    return $sessionId
+}
+
 # Track the dedicated serve so we can clean it up on exit.
 $startedServe = $null
 
@@ -180,18 +198,6 @@ try {
     $serverUrl = "http://127.0.0.1:$port"
     [Environment]::SetEnvironmentVariable('OPENCODE_API_URL', $serverUrl, 'Process')
 
-    if ($shouldStartTui) {
-        Write-Host "[..] Starting OpenCode TUI attached to $serverUrl ..." -ForegroundColor Green
-        try {
-            $startedTui = Start-Process -FilePath $OpencodeExe `
-                -ArgumentList @('attach', $serverUrl, '--dir', $effectiveCwd) `
-                -WorkingDirectory $effectiveCwd -WindowStyle Normal -PassThru
-            Write-Host "[OK] OpenCode TUI started (PID $($startedTui.Id))" -ForegroundColor Green
-        } catch {
-            Write-Host "[!!] Failed to start OpenCode TUI: $($_.Exception.Message)" -ForegroundColor Red
-        }
-    }
-
     # opencode-telegram stores its config and data under:
     #   %APPDATA%\opencode-telegram-bot\  (on Windows)
     # Unlike opencode-lark, it does NOT hash by cwd — it uses a single config
@@ -237,16 +243,6 @@ try {
         Write-Host "[i] No Telegram proxy configured; bot will use direct API access." -ForegroundColor Cyan
     }
 
-    # Start opencode-telegram in foreground (blocking).
-    # The bot uses long polling — no inbound port needed.
-    # It will stay running until Ctrl+C or the bot exits.
-    Write-Host "[..] Starting opencode-telegram -> $serverUrl" -ForegroundColor Green
-    Write-Host "[i] Config dir: $TelegramConfigDir" -ForegroundColor DarkGray
-    Write-Host "[i] Bot will use long polling (no inbound port required)" -ForegroundColor DarkGray
-    if ($NoTui) {
-        Write-Host "[i] TUI disabled for this run (-NoTui)." -ForegroundColor DarkGray
-    }
-
     # Use node to run the CLI directly, passing the OPENCODE_API_URL env var.
     $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
     if (-not $nodeExe) {
@@ -255,21 +251,103 @@ try {
     }
     [Environment]::SetEnvironmentVariable('NODE_USE_SYSTEM_CA', '1', 'Process')
 
-    Write-Host ""
-    Write-Host "Bot is running. Send a message on Telegram to start chatting." -ForegroundColor Cyan
-    Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
-
-    # Run in the current console so Ctrl+C reaches the bot. Once it exits,
-    # PowerShell continues into finally and cleans up the dedicated serve.
+    # Start opencode-telegram in background with log redirection
+    Write-Host "[..] Starting opencode-telegram -> $serverUrl" -ForegroundColor Green
+    Write-Host "[i] Config dir: $TelegramConfigDir" -ForegroundColor DarkGray
+    Write-Host "[i] Bot will use long polling (no inbound port required)" -ForegroundColor DarkGray
+    
+    $botLogOut = Join-Path $env:TEMP "opencode-telegram-stdout.log"
+    $botLogErr = Join-Path $env:TEMP "opencode-telegram-stderr.log"
+    Remove-Item $botLogOut, $botLogErr -ErrorAction SilentlyContinue
+    
     Push-Location $TelegramConfigDir
     try {
-        & $nodeExe $TelegramExe start
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[!!] opencode-telegram exited with code $LASTEXITCODE." -ForegroundColor Red
-            Write-TelegramConflictHint -ConfigDir $TelegramConfigDir
-        }
+        $botProc = Start-Process -FilePath $nodeExe `
+            -ArgumentList $TelegramExe, "start" `
+            -WorkingDirectory $TelegramConfigDir `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $botLogOut -RedirectStandardError $botLogErr
     } finally {
         Pop-Location
+    }
+    
+    # Verify bot actually stayed alive
+    for ($i = 0; $i -lt 4; $i++) {
+        Start-Sleep -Seconds 1
+        $botProc.Refresh()
+        if ($botProc.HasExited) { break }
+    }
+    if ($botProc.HasExited) {
+        Write-Host "[!!] opencode-telegram exited immediately (code $($botProc.ExitCode))." -ForegroundColor Red
+        $errTail = Get-Content $botLogErr -ErrorAction SilentlyContinue -Tail 10
+        if ($errTail) {
+            Write-Host "   --- stderr ---" -ForegroundColor DarkGray
+            $errTail | ForEach-Object { Write-Host "   $_" -ForegroundColor DarkGray }
+        }
+        Write-TelegramConflictHint -ConfigDir $TelegramConfigDir
+        exit 1
+    }
+    Write-Host "[OK] opencode-telegram started (PID $($botProc.Id))" -ForegroundColor Green
+
+    if ($shouldStartTui) {
+        # Wait for bot to create/restore session, then start TUI attached to it
+        Write-Host ""
+        Write-Host "[..] Waiting for Telegram bot session..." -ForegroundColor Yellow
+        Write-Host "    Press Ctrl+C to stop everything." -ForegroundColor Yellow
+        
+        $currentSessionId = $null
+        while ($true) {
+            $botProc.Refresh()
+            if ($botProc.HasExited) {
+                Write-Host "[!!] opencode-telegram has exited." -ForegroundColor Red
+                break
+            }
+            
+            # Check for session in bot log
+            $sessionId = Get-TelegramSessionId -LogPath $botLogOut
+            if ($sessionId -and $sessionId -ne $currentSessionId) {
+                $currentSessionId = $sessionId
+                Write-Host "[OK] Found Telegram bot session: $sessionId" -ForegroundColor Green
+                
+                # Stop old TUI if exists
+                if ($startedTui -and -not $startedTui.HasExited) {
+                    Write-Host "[..] Stopping old TUI (session changed)..." -ForegroundColor Yellow
+                    try {
+                        Stop-Process -Id $startedTui.Id -Force -ErrorAction SilentlyContinue
+                    } catch {}
+                }
+                
+                # Start new TUI attached to this session
+                Write-Host "[..] Starting TUI attached to session $sessionId..." -ForegroundColor Green
+                try {
+                    $startedTui = Start-Process -FilePath $OpencodeExe `
+                        -ArgumentList @('attach', $serverUrl, '--session', $sessionId, '--dir', $effectiveCwd) `
+                        -WorkingDirectory $effectiveCwd -WindowStyle Normal -PassThru
+                    Write-Host "[OK] OpenCode TUI started (PID $($startedTui.Id))" -ForegroundColor Green
+                } catch {
+                    Write-Host "[!!] Failed to start OpenCode TUI: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            
+            Start-Sleep -Seconds 2
+        }
+    } else {
+        Write-Host "[i] TUI disabled for this run (-NoTui)." -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "Bot is running. Send a message on Telegram to start chatting." -ForegroundColor Cyan
+        Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
+        
+        # Wait for bot process
+        try {
+            $botProc.WaitForExit()
+        } catch {
+            # Interrupted by Ctrl+C
+        }
+        
+        if ($botProc.HasExited -and $botProc.ExitCode -ne 0) {
+            Write-Host "[!!] opencode-telegram exited with code $($botProc.ExitCode)." -ForegroundColor Red
+            Write-TelegramConflictHint -ConfigDir $TelegramConfigDir
+        }
     }
 
 } finally {

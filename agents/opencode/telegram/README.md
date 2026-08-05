@@ -66,7 +66,9 @@
 .\start-opencode-remote.ps1
 ```
 
-默认行为会像飞书通道一样，同时打开一个本地 OpenCode TUI（附着到同一个 serve）。
+默认行为会启动本地 OpenCode TUI，并自动 attach 到 Telegram bot 的 session，实现手机和电脑端消息同步。
+
+**TUI 会自动跟随 session 切换**：当你在 Telegram 中切换到其他 session 时，本地 TUI 会自动重启并 attach 到新的 session，始终保持同步。
 
 如果只想运行 Telegram bot（不拉起本地 TUI），可使用：
 
@@ -81,8 +83,10 @@
 4. 验证 Telegram Bot 配置（Token、User ID）
 5. 显示 Telegram 网络模式（直连、代理或反向代理）
 6. 启动 opencode-telegram 并连接到该端口
-7. **保持运行**，脚本窗口会一直阻塞，直到你按 Ctrl+C 或 bot 退出
-8. 退出时（Ctrl+C）自动清理本脚本启动的 serve 和 bot 进程
+7. 等待 bot 创建/恢复 session，然后启动 TUI 并 attach 到该 session
+8. 监控 session 切换，自动重启 TUI 跟随新 session
+9. **保持运行**，脚本窗口会一直阻塞，直到你按 Ctrl+C 或 bot 退出
+10. 退出时（Ctrl+C）自动清理本脚本启动的 serve、bot 和 TUI 进程
 
 #### 指定项目目录
 
