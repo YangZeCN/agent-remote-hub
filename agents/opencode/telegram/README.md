@@ -91,6 +91,14 @@
 
 脚本始终启动独立 serve。即使飞书正在操作同一个项目目录，两个通道也会使用不同端口和不同进程。
 
+> **重要：`-WorkingDir` 不会自动切换 Telegram 里的当前项目。** 它只设置本脚本启动的 `opencode serve` 的工作目录，使该目录作为一个项目出现在 `/projects` 列表中。Telegram bot 的“当前项目/会话”保存在 `%APPDATA%\opencode-telegram-bot\settings.json`，与 serve 的 cwd 相互独立。启动时 bot 会**恢复上一次的会话**（可能是旧目录），本地 TUI 也会 attach 到那个已存在的会话，因此会显示旧目录而不是 `-WorkingDir` 指定的目录。
+>
+> 要真正切换到该目录，必须在 Telegram 里手动操作：
+> 1. `/projects` → 选择目标项目（这一步才会写入并持久化“当前项目”）
+> 2. `/new` 新建会话（会话目录 = 所选项目的 worktree）
+>
+> 完成后本地 TUI 会自动重启并 attach 到新会话，显示正确的目录。
+
 ### 首次配置
 
 #### 第一步：创建 Telegram Bot，获取 Token
@@ -169,9 +177,21 @@ OPENCODE_MODEL_ID=qwen3.7-plus
 
 ### Q: 一个从没在 OpenCode 打开过的新项目，怎么让它出现在 `/projects`？
 
-**A**: 最稳妥的方法是先用该项目目录启动 Telegram 专用的 `opencode serve`，再在 Telegram 里切换项目。
+**A**: `/projects` 只列出 OpenCode 已知的项目（API 项目列表 + 会话目录缓存）。一个从没建过会话的全新目录，仅靠 `-WorkingDir` 启动 serve **不一定**会出现在里面。最可靠的做法是用 `/open` 浏览目录并选中它——选中后 bot 会把该目录注册为项目、切换为当前项目，之后它就会出现在 `/projects`。
 
-方式一（推荐，使用启动脚本）：
+> **D 盘（或主目录以外）无法浏览？** `/open` 的可浏览范围由环境变量 `OPEN_BROWSER_ROOTS` 决定，**默认只有用户主目录（C 盘 `C:\Users\<你>`）**。要浏览 D 盘，需在 `%APPDATA%\opencode-telegram-bot\.env` 里配置（逗号分隔多个根）：
+>
+> ```env
+> OPEN_BROWSER_ROOTS=C:\Users\<你>,D:\Code
+> ```
+>
+> 保存后重启 bot（重跑启动脚本）。配置多个根时，`/open` 会先让你选择根目录，再逐级进入，选中目标文件夹即可。
+
+如果目录已经建过会话（在 `/projects` 里能看到），直接 `/projects` 选择即可，无需 `/open`。
+
+以下两种方式适用于该目录**已经有历史会话**、只是想用指定目录启动专用 serve 的情况：
+
+方式一（使用启动脚本）：
 
 ```powershell
 .\start-opencode-remote.ps1 -WorkingDir "D:\Code\YourNewProject"
@@ -189,11 +209,11 @@ $env:NODE_USE_SYSTEM_CA = "1"
 node "$env:APPDATA\npm\node_modules\@grinev\opencode-telegram-bot\dist\cli.js" start
 ```
 
-然后在 Telegram 中执行：
-1. `/projects`（刷新并选择新项目）
-2. `/new`（创建新会话）或 `/sessions`（切换已有会话）
+**接着这一步不能省略**，必须在 Telegram 中手动切换项目：
+1. `/projects`（刷新并选择新项目）— 只有这一步会把该目录写入 bot 的“当前项目”并持久化到 `settings.json`
+2. `/new`（在该项目下创建新会话）或 `/sessions`（切换已有会话）
 
-说明：`/projects` 列表来自 OpenCode API 项目列表与会话目录缓存合并结果。仅在文件系统里存在目录，不一定会立即出现在列表中；先以该目录启动一次 `serve` 最稳定。
+> **为什么只加 `-WorkingDir` 不够？** bot 的会话目录来自它自己持久化的“当前项目”，而不是 `opencode serve` 的 cwd。`-WorkingDir` 只设置 serve 的 cwd，不会自动切换 bot 的当前项目，也不保证全新目录立即出现在 `/projects`；bot 启动时仍会恢复上一次的会话（可能是旧目录），本地 TUI 也会 attach 到那个旧会话。全新目录请优先用上面的 `/open` 浏览方式添加。
 
 ### Q: 重启电脑后，之前的对话还在吗？
 
