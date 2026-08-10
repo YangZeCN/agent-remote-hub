@@ -146,6 +146,102 @@ OPENCODE_MODEL_ID=qwen3.7-plus
 
 > **注意**：Telegram bot 的模型配置独立于本地 OpenCode TUI。如果 bot 返回空消息或无响应，请检查 `.env` 中的模型配置是否正确，并确保该模型在 OpenCode 中可用。
 
+## Windows 双网卡分流
+
+适用于无线网卡连接国内网络、有线网卡连接海外专线的 Windows 主机。配置只修改运行 Bot 的本机路由表，不需要修改交换机。目标是让系统默认流量继续走无线网络，仅将 Telegram Bot API 流量送往有线专线。
+
+> 以下命令需要在管理员 PowerShell 中执行。先使用临时路由验证，确认 Bot 能正常收发消息后再写入永久路由。
+
+### 1. 确认接口、网关和默认出口
+
+```powershell
+Get-NetIPConfiguration |
+       Select-Object InterfaceAlias,InterfaceIndex,
+              @{N='IPv4';E={$_.IPv4Address.IPAddress -join ','}},
+              @{N='Gateway';E={$_.IPv4DefaultGateway.NextHop -join ','}}
+
+Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 |
+       Sort-Object RouteMetric
+```
+
+无线网卡的默认路由 Metric 应小于有线网卡。Metric 越小，默认路由优先级越高。仅在当前优先级不正确时才调整，例如：
+
+```powershell
+Set-NetIPInterface -InterfaceAlias 'Wi-Fi 2' -AddressFamily IPv4 `
+       -AutomaticMetric Disabled -InterfaceMetric 10
+Set-NetIPInterface -InterfaceAlias 'Ethernet' -AddressFamily IPv4 `
+       -AutomaticMetric Disabled -InterfaceMetric 20
+```
+
+### 2. 添加临时 Telegram 路由
+
+将变量替换为本机实际的有线接口索引和网关。`ActiveStore` 路由会在重启后消失：
+
+```powershell
+$interfaceIndex = 19
+$gateway = '10.144.130.1'
+$telegramPrefix = '149.154.160.0/20'
+
+New-NetRoute -DestinationPrefix $telegramPrefix `
+       -InterfaceIndex $interfaceIndex `
+       -NextHop $gateway `
+       -RouteMetric 5 `
+       -PolicyStore ActiveStore
+```
+
+验证目标地址确实通过有线网卡，并测试 TCP 443：
+
+```powershell
+Find-NetRoute -RemoteIPAddress 149.154.167.220 |
+       Format-List InterfaceAlias,InterfaceIndex,NextHop,RouteMetric
+
+Test-NetConnection 149.154.167.220 -Port 443 |
+       Format-List RemoteAddress,InterfaceAlias,SourceAddress,TcpTestSucceeded
+```
+
+### 3. 绕过受污染的 DNS
+
+如果 `Resolve-DnsName api.telegram.org` 返回的不是 Telegram 地址，可在 `%WINDIR%\System32\drivers\etc\hosts` 中固定一个已经通过 HTTPS 验证的 Bot API 地址：
+
+```text
+149.154.167.220 api.telegram.org
+```
+
+修改前必须备份 Hosts，修改后执行：
+
+```powershell
+Clear-DnsClientCache
+Resolve-DnsName api.telegram.org -Type A
+Test-NetConnection api.telegram.org -Port 443
+```
+
+Hosts 中写入多个同名地址不等于健康检查或自动故障切换。该地址失效时需要重新验证并更新；若需要自动容错，优先使用 `TELEGRAM_PROXY_URL` 或自建 `TELEGRAM_API_ROOT`。
+
+### 4. 固化与回滚
+
+Bot 实际收发消息和文件验证通过后，删除临时路由并写入永久路由：
+
+```powershell
+Remove-NetRoute -DestinationPrefix $telegramPrefix `
+       -InterfaceIndex $interfaceIndex -PolicyStore ActiveStore -Confirm:$false
+
+New-NetRoute -DestinationPrefix $telegramPrefix `
+       -InterfaceIndex $interfaceIndex `
+       -NextHop $gateway `
+       -RouteMetric 5 `
+       -PolicyStore PersistentStore
+```
+
+专线故障、网关变化或需要恢复默认选路时，删除 Telegram 路由，并恢复修改前备份的 Hosts：
+
+```powershell
+Get-NetRoute -DestinationPrefix $telegramPrefix -ErrorAction SilentlyContinue |
+       Remove-NetRoute -Confirm:$false
+Clear-DnsClientCache
+```
+
+静态路由本身不会检测专线健康状态。如果有线链路仍处于连接状态但专线上游不可达，Windows 不一定自动回退到无线网络，因此生产部署仍需监控 TCP 443 和 Bot 日志。
+
 ## 常见问题
 
 ### Q: 为什么用随机端口而不是固定端口？
