@@ -146,7 +146,36 @@ OPENCODE_MODEL_ID=qwen3.7-plus
 
 > **注意**：Telegram bot 的模型配置独立于本地 OpenCode TUI。如果 bot 返回空消息或无响应，请检查 `.env` 中的模型配置是否正确，并确保该模型在 OpenCode 中可用。
 
-## Windows 双网卡分流
+## 网络配置
+
+Bot 需要访问 `api.telegram.org`。在国内网络环境下，必须配置代理或专线，否则 Bot 会卡在 `Waiting for Telegram bot session...`，日志中显示 `Network request for 'setMyCommands' failed!`。
+
+### 方式一：本地代理（推荐）
+
+适用于本机运行了 v2rayN、Clash、SSR 等代理软件的情况。编辑 `%APPDATA%\opencode-telegram-bot\.env`，取消注释并填写代理地址：
+
+```env
+# HTTP/HTTPS 代理（Clash 默认端口 7890，v2rayN 默认端口 10808）
+TELEGRAM_PROXY_URL=http://127.0.0.1:10808
+
+# SOCKS5 代理（如 v2rayN 的 SOCKS 端口）
+# TELEGRAM_PROXY_URL=socks5://127.0.0.1:1080
+```
+
+> **提示**：不确定代理端口？运行以下命令扫描常见端口：
+> ```powershell
+> @(7890,7891,1080,10808,10809,20170,20171,10801,10802) | ForEach-Object {
+>     if ((Test-NetConnection 127.0.0.1 -Port $_ -WarningAction SilentlyContinue).TcpTestSucceeded) {
+>         Write-Host "Port $_ : OPEN"
+>     }
+> }
+> ```
+
+### 方式二：Windows 双网卡分流
+
+适用于无线网卡连接国内网络、有线网卡连接海外专线的 Windows 主机。配置只修改运行 Bot 的本机路由表，不需要修改交换机。目标是让系统默认流量继续走无线网络，仅将 Telegram Bot API 流量送往有线专线。
+
+> 以下命令需要在管理员 PowerShell 中执行。先使用临时路由验证，确认 Bot 能正常收发消息后再写入永久路由。
 
 适用于无线网卡连接国内网络、有线网卡连接海外专线的 Windows 主机。配置只修改运行 Bot 的本机路由表，不需要修改交换机。目标是让系统默认流量继续走无线网络，仅将 Telegram Bot API 流量送往有线专线。
 
