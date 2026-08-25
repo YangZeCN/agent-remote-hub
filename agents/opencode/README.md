@@ -124,7 +124,12 @@ cd feishu
 
 ### Telegram
 
-当前尚未在本仓库提供启动脚本。候选实现、网络要求和验证计划见 [OpenCode Telegram Bot 调研](../../docs/telegram-bot-research.md)。
+```bash
+cd telegram
+./start-opencode-remote.ps1
+```
+
+详细配置请参考 [Telegram 通道文档](telegram/README.md)。首次使用需要配置代理访问 Telegram API，详见文档中的[网络配置](telegram/README.md#网络配置)章节。
 
 ## 环境配置
 

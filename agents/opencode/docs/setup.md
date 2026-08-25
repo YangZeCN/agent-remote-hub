@@ -159,10 +159,14 @@ opencode-telegram config
 如果本机无法直连 Telegram API，在 `.env` 中配置代理：
 
 ```env
-TELEGRAM_PROXY_URL=socks5://127.0.0.1:7890
+# HTTP/HTTPS 代理（Clash 默认端口 7890，v2rayN 默认端口 10808）
+TELEGRAM_PROXY_URL=http://127.0.0.1:10808
+
+# SOCKS5 代理
+# TELEGRAM_PROXY_URL=socks5://127.0.0.1:1080
 ```
 
-支持 SOCKS5、SOCKS4、HTTP、HTTPS 代理。详见 [Telegram 通道文档](../telegram/README.md)。
+支持 SOCKS5、SOCKS4、HTTP、HTTPS 代理。也支持双网卡分流和自建反向代理，详见 [Telegram 通道文档 - 网络配置](../telegram/README.md#网络配置)。
 
 #### 验证 Telegram 通道环境
 

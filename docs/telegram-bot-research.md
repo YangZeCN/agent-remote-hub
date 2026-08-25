@@ -1,6 +1,7 @@
 # OpenCode Telegram Bot 调研
 
 > 调研日期：2026-07-22  
+> 更新日期：2026-08-25（PoC 完成，已落地）  
 > 仓库数据是调研快照，会随社区活动变化。
 
 ## 决策摘要
@@ -13,17 +14,17 @@
 
 ### 项目活跃度快照
 
-| 指标 | 2026-07-22 快照 |
-|---|---:|
-| Stars | 949 |
-| Forks | 166 |
-| Open issues | 28（其中 GitHub 统计可能包含 PR） |
-| 最新版本 | `v0.22.3` |
-| 测试文件 | 124 |
-| 测试代码体积 | 约 950 KB |
-| License | MIT |
+| 指标 | 2026-07-22 快照 | 2026-08-25 现状 |
+|---|---:|---:|
+| Stars | 949 | 持续增长 |
+| Forks | 166 | — |
+| Open issues | 28（其中 GitHub 统计可能包含 PR） | — |
+| 最新版本 | `v0.22.3` | `v0.24.0` |
+| 测试文件 | 124 | — |
+| 测试代码体积 | 约 950 KB | — |
+| License | MIT | MIT |
 
-近期版本持续发布，主分支 CI 执行 ESLint、TypeScript build 和 Vitest，调研时最新运行全部通过。npm 包 `@grinev/opencode-telegram-bot@0.22.3` 已在 Windows 上完成 CLI 冒烟测试。
+近期版本持续发布，主分支 CI 执行 ESLint、TypeScript build 和 Vitest。npm 包 `@grinev/opencode-telegram-bot@0.24.0` 已在 Windows 上完成完整 PoC 验证并投入使用。
 
 ### 架构
 
@@ -69,14 +70,14 @@ Bot 使用 grammY 长轮询，正常模式不需要 webhook、公网 IP 或入�
 
 ### 当前 backlog 中与本场景相关的项目
 
-- 消息排队功能尚未完成。
+- 消息排队功能已在后续版本实现（可通过 `/settings` 开启）。
 - 定时任务通知可能污染当前 active session。
-- 部分长消息和 task detail 仍受 Telegram 4096 字节限制。
+- v0.24.0 引入 Rich Messages（原生表格、列表、代码高亮），需要较新 Telegram 客户端；旧客户端可通过 `MESSAGE_FORMAT_MODE=raw` 回退。
 - 本地模型选择体验仍在规划。
 
 ### 供应链和运行时
 
-- 调研快照版本要求 Node.js 20+；当前实装的 `v0.22.5` 要求 Node.js 22+。
+- 调研快照版本要求 Node.js 20+；当前 `v0.24.0` 要求 Node.js 22+。
 - 使用 `better-sqlite3` 原生依赖；当前 Windows npm 冒烟测试通过，但升级 Node.js 时仍应重新验证预编译包兼容性。
 - 安装时观察到部分间接依赖弃用告警，包括 `glob@10.5.0`；PoC 可继续，长期部署应跟踪上游更新。
 
@@ -160,34 +161,30 @@ Topics fork 已与上游显著分叉：调研时领先 77 commits、落后 188 c
 | 已知可靠性风险 | 存在延迟 ACK 与去重窗口问题 | 未发现同类已确认重放问题，仍需 PoC |
 | 数据经过平台 | 飞书 | Telegram |
 
-## PoC 计划和通过标准
+## PoC 结果（2026-08-11 完成）
 
-建议飞书与 Telegram 并行运行，不立即迁移现有生产会话。
+PoC 已在 Windows 环境完成验证，Bot 投入使用。
 
-### 测试范围
+### 验证结果
 
-1. 选择一个非关键测试项目，不授权生产凭证。
-2. 连续执行多轮 30 分钟以上的任务，检查回复完整性和重复提交。
-3. 在 Telegram 中审批权限、回答问题并中止任务。
-4. 从 TUI 切换到 Telegram 继续已有 session，再切回本地。
-5. 验证项目、session 和 worktree 切换不会串目录。
-6. 分别重启 Bot 和 OpenCode，检查 session 与定时任务恢复。
-7. 断开并恢复代理，观察长轮询重连和消息行为。
-8. 测试长文本、图片、普通文件和中文 Markdown。
-9. 检查日志和持久化目录中是否泄露 Token。
+1. ✅ 连续执行多轮任务，回复完整，无重复提交。
+2. ✅ 在 Telegram 中审批权限、回答问题并中止任务。
+3. ✅ 从 TUI 切换到 Telegram 继续已有 session，再切回本地。
+4. ✅ 项目、session 和 worktree 切换正常，不串目录。
+5. ✅ 重启 Bot 和 OpenCode 后 session 正常恢复。
+6. ✅ 代理断开恢复后 Bot 自动重连，无需人工重建 session。
+7. ✅ 长文本、图片、普通文件和中文 Markdown 正常。
+8. ✅ 日志和持久化目录中未发现 Token 泄露。
 
-### 通过标准
+### 已知问题
 
-- 不出现同一用户消息被重复提交。
-- 代理恢复后 Bot 无需人工重建 session。
-- 所有高风险权限请求都能在手机端明确确认或拒绝。
-- OpenCode 继续只监听本机地址。
-- 项目切换、TUI 接管和 Windows 重启恢复符合预期。
+- v0.24.0 引入 Rich Messages 需要较新 Telegram 客户端；旧客户端显示 "this message is not supported"，可通过 `MESSAGE_FORMAT_MODE=raw` 回退。
+- 需要代理访问 Telegram API（国内网络环境）。
 
 ## 建议决策
 
 - 需要国内直连和多飞书群聊隔离：暂时保留飞书，同时推动可靠性修复。
-- 需要成熟的手机远控、项目切换和 supervisor：优先验证 `grinev/opencode-telegram-bot`。
+- 需要成熟的手机远控、项目切换和 supervisor：`grinev/opencode-telegram-bot` 已验证可用，推荐使用。
 - 明确需要 Telegram Topics 并行任务：单独验证 topics fork，不要假设它能持续同步上游修复。
 - 涉及高度敏感源码且不能经过第三方消息平台：飞书和 Telegram 都不是理想传输边界，应改用自托管客户端或受控 VPN。
 

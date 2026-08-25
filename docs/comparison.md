@@ -133,32 +133,33 @@
 | golembot | 310 | 多 Agent 通用（Cursor/Claude Code/OpenCode/Codex），支持 7 个平台 | ★★★★☆ |
 | deepcoldy/botmux | 696 | 多 CLI 桥接，每个 DM 自动开 session，社区最活跃 | ★★★★☆ |
 
+> **注意**：本仓库实际使用的是 [opencode-lark](https://github.com/guazi04/opencode-lark)（`guazi04/opencode-lark`），而非调研时推荐的 `lark-opencode-bridge`。两者功能类似但项目不同，`opencode-lark` 通过 npm 安装（`bun add -g opencode-lark`），配置方式也略有差异。
+
 ### 其他平台方案（参考）
 
 | 项目 | 平台 | 说明 |
 |------|------|------|
 | opencode-remote-android | 专用 App | Android APK，直接调 OpenCode HTTP API |
-| grinev/opencode-telegram-bot | Telegram | 936★，功能最完整，但需要翻墙 |
+| grinev/opencode-telegram-bot | Telegram | 949★（2026-07 快照），功能最完整，已在本仓库落地 |
 
-## 六、推荐方案：lark-opencode-bridge
+## 六、推荐方案：opencode-lark（实际采用）
+
+> 调研时推荐的是 `lark-opencode-bridge`，但本仓库最终采用的是 [opencode-lark](https://github.com/guazi04/opencode-lark)（`guazi04/opencode-lark`）。两者功能类似，但 `opencode-lark` 通过 npm/bun 安装，更轻量。
 
 ### 为什么选它
 
-- 专门为 OpenCode + 飞书设计，和你的场景完美匹配
-- QR 扫码创建飞书应用，配置最简单
+- 专门为 OpenCode + 飞书设计
+- 通过 npm/bun 安装，配置简单
 - 流式卡片：思考/工具调用/文本实时刷新
-- `/spawn` 工作群：一个群 = 一个 session = 一个项目上下文
-- 飞书文档评论 @机器人：直接在文档里问 AI
 - 附件支持：发截图/文件给 AI 分析
-- 后台守护进程：开机自启，崩溃自动重启
 - 支持 Windows
 - 代码 100% 本地，不上传
 
 ### 工作原理
 
 ```
-1. bridge run 启动 opencode serve 作为子进程
-2. 建立飞书 WebSocket 长连接（出站，不需要开放端口）
+1. start-opencode-remote.ps1 启动 opencode serve（随机端口）
+2. 启动 opencode-lark，建立飞书 WebSocket 长连接（出站，不需要开放端口）
 3. 收到飞书消息 → 创建/复用 opencode session
 4. 调用 opencode HTTP API 发送 prompt
 5. 订阅 SSE 事件流，实时渲染到飞书卡片
@@ -167,31 +168,7 @@
 
 ### 搭建步骤
 
-```bash
-# 1. 确认 Node.js >= 20
-node -v
-
-# 2. 确认 opencode 已安装
-opencode --version
-
-# 3. 安装飞书 CLI
-npm install -g @larksuite/cli@latest
-
-# 4. 安装 bridge
-npm install -g lark-opencode-bridge@latest
-lark-opencode-bridge doctor
-
-# 5. 首次运行（前台，扫码配置）
-lark-opencode-bridge run
-# → 扫飞书二维码创建应用
-# → 飞书开发者后台开权限 + 发布版本
-
-# 6. 测试
-# 飞书里给机器人发 /help
-
-# 7.（可选）设为后台守护进程
-lark-opencode-bridge start
-```
+详见 [环境配置指南](../agents/opencode/docs/setup.md) 和 [飞书通道文档](../agents/opencode/feishu/README.md)。
 
 ### 常用命令
 

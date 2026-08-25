@@ -41,8 +41,8 @@
 
 | | 飞书（Feishu） | Telegram |
 |---|---|---|
-| **OpenCode** | ⚠️ [可用，存在重放风险](agents/opencode/feishu/) | 🧪 [已调研，待 PoC](docs/telegram-bot-research.md) |
-| **VSCode** | 🔜 规划中 | 🔜 规划中 |
+| **OpenCode** | ⚠️ [可用，存在重放风险](agents/opencode/feishu/) | ✅ [可用](agents/opencode/telegram/) |
+| **VSCode** | 🔜 规划中 |  规划中 |
 
 ## 快速开始
 
@@ -55,7 +55,7 @@
 | 方案 | 入口 | 说明 |
 |---|---|---|
 | OpenCode + 飞书 | [agents/opencode/feishu/](agents/opencode/feishu/) | 已落地；使用前阅读[可靠性记录](docs/feishu-reliability.md) |
-| OpenCode + Telegram | [调研报告](docs/telegram-bot-research.md) | 推荐 `grinev/opencode-telegram-bot` 进入 PoC，尚未在本仓库落地 |
+| OpenCode + Telegram | [agents/opencode/telegram/](agents/opencode/telegram/) | 已落地；需要代理访问 Telegram API |
 
 ### 2. 环境配置
 
@@ -89,6 +89,9 @@ agent-remote-hub/
 │   ├── opencode/                  # OpenCode 方案
 │   │   ├── README.md              # OpenCode 方案总览
 │   │   ├── feishu/                # 飞书通道
+│   │   │   ├── start-opencode-remote.ps1
+│   │   │   └── README.md
+│   │   ├── telegram/              # Telegram 通道
 │   │   │   ├── start-opencode-remote.ps1
 │   │   │   └── README.md
 │   │   └── docs/
